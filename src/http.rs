@@ -50,5 +50,5 @@ pub fn start_thread() -> thread::JoinHandle<()> {
 }
 
 pub fn port() -> i32 {
-    8000
+    8080
 }

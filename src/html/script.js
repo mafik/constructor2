@@ -97,7 +97,7 @@ function Reconnect() {
 };
 
 function Connect() {
-  socket = new WebSocket("ws://localhost:8000/events");
+  socket = new WebSocket("ws://localhost:8081/");
   socket.onmessage = SocketMessage;
   socket.onopen = SocketOpen;
   socket.onerror = Reconnect;
