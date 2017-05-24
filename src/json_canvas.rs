@@ -1,3 +1,5 @@
+extern crate serde_json;
+
 use canvas::Canvas;
 
 struct JSONCanvas {
@@ -30,18 +32,33 @@ impl Canvas for JSONCanvas {
         self.append(format!(r#"{{"type":"translate","x":{},"y":{}}}"#, x, y))
     }
     fn fillText(&mut self, text: &str, x: f64, y: f64) -> &mut Canvas {
-        // TODO: escape text with serde_json::to_string
-        unimplemented!();
-        self.append(format!(r#"{{"type":"fillText","text":"{}","x":{},"y":{}}}"#, text, x, y))
+        let t = serde_json::to_string(text).unwrap();
+        self.append(format!(r#"{{"type":"fillText","text":"{}","x":{},"y":{}}}"#,
+                            t,
+                            x,
+                            y))
     }
     fn fillRect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"fillRect","x":{},"y":{},"width":{},"height":{}}}"#, x, y, w, h))
+        self.append(format!(r#"{{"type":"fillRect","x":{},"y":{},"width":{},"height":{}}}"#,
+                            x,
+                            y,
+                            w,
+                            h))
     }
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"rect","x":{},"y":{},"width":{},"height":{}}}"#, x, y, w, h))
+        self.append(format!(r#"{{"type":"rect","x":{},"y":{},"width":{},"height":{}}}"#,
+                            x,
+                            y,
+                            w,
+                            h))
     }
     fn arc(&mut self, x: f64, y: f64, r: f64, alpha: f64, beta: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"arc","x":{},"y":{},"r":{},"alpha":{},"beta":{}}}"#, x, y, r, alpha, beta))
+        self.append(format!(r#"{{"type":"arc","x":{},"y":{},"r":{},"alpha":{},"beta":{}}}"#,
+                            x,
+                            y,
+                            r,
+                            alpha,
+                            beta))
     }
     fn moveTo(&mut self, x: f64, y: f64) -> &mut Canvas {
         self.append(format!(r#"{{"type":"moveTo","x":{},"y":{}}}"#, x, y))
@@ -50,25 +67,30 @@ impl Canvas for JSONCanvas {
         self.append(format!(r#"{{"type":"lineTo","x":{},"y":{}}}"#, x, y))
     }
     fn setLineDash(&mut self, dash: &Vec<f64>) -> &mut Canvas {
-        unimplemented!();
+        let d = serde_json::to_string(dash).unwrap();
+        self.append(format!(r#"{{"type":"setLineDash","dash":{}}}"#, d))
     }
     fn rotate(&mut self, alpha: f64) -> &mut Canvas {
         self.append(format!(r#"{{"type":"rotate","alpha":{}}}"#, alpha))
     }
     fn fillStyle(&mut self, style: &str) -> &mut Canvas {
-        unimplemented!();
+        let s = serde_json::to_string(style).unwrap();
+        self.append(format!(r#"{{"type":"fillStyle","style":{}}}"#, s))
     }
     fn textAlign(&mut self, align: &str) -> &mut Canvas {
-        unimplemented!();
+        let a = serde_json::to_string(align).unwrap();
+        self.append(format!(r#"{{"type":"textAlign","align":{}}}"#, a))
     }
     fn textBaseline(&mut self, baseline: &str) -> &mut Canvas {
-        unimplemented!();
+        let b = serde_json::to_string(baseline).unwrap();
+        self.append(format!(r#"{{"type":"textBaseline","baseline":{}}}"#, b))
     }
     fn lineWidth(&mut self, width: f64) -> &mut Canvas {
         self.append(format!(r#"{{"type":"lineWidth","width":{}}}"#, width))
     }
     fn strokeStyle(&mut self, style: &str) -> &mut Canvas {
-        unimplemented!();
+        let s = serde_json::to_string(style).unwrap();
+        self.append(format!(r#"{{"type":"strokeStyle","style":{}}}"#, s))
     }
     fn save(&mut self) -> &mut Canvas {
         self.append(r#"{"type":"save"}"#.to_owned())
@@ -97,7 +119,7 @@ impl Canvas for JSONCanvas {
 mod tests {
     use super::Canvas;
     use super::JSONCanvas;
-    use ::std::f64::consts::PI;
+    use std::f64::consts::PI;
 
     #[test]
     fn translate() {
@@ -117,24 +139,24 @@ mod tests {
                    r#"[{"type":"fillText","text":"\\\"\"\\","x":1,"y":2}]"#);
     }
 
-//            .fillText(text, x, y)
-//            .fillRect(x, y, w, h)
-//            .rect(x, y, w, h)
-//            .arc(x, y, r, alpha, beta)
-//            .moveTo(x, y)
-//            .lineTo(x, y)
-//            .setLineDash(vec![5, 10, 15])
-//            .rotate(PI)
-//            .fillStyle("a")
-//            .textAlign("b")
-//            .lineWidth("c")
-//            .strokeStyle("d")
-//            .save()
-//            .restore()
-//            .beginPath()
-//            .closePath()
-//            .fill()
-//            .stroke()
-//            .clip()
+    //            .fillText(text, x, y)
+    //            .fillRect(x, y, w, h)
+    //            .rect(x, y, w, h)
+    //            .arc(x, y, r, alpha, beta)
+    //            .moveTo(x, y)
+    //            .lineTo(x, y)
+    //            .setLineDash(vec![5, 10, 15])
+    //            .rotate(PI)
+    //            .fillStyle("a")
+    //            .textAlign("b")
+    //            .lineWidth("c")
+    //            .strokeStyle("d")
+    //            .save()
+    //            .restore()
+    //            .beginPath()
+    //            .closePath()
+    //            .fill()
+    //            .stroke()
+    //            .clip()
 
 }

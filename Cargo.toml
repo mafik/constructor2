@@ -4,6 +4,6 @@ version = "0.1.0"
 authors = ["Marek Rogalski <mafikpl@gmail.com>"]
 
 [dependencies]
-websocket = "*"
 hyper = "*"
+websocket = "*"
 serde_json = "1.0"

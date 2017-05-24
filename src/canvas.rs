@@ -1,3 +1,4 @@
+#[allow(non_snake_case)]
 pub trait Canvas {
     fn translate(&mut self, x: f64, y: f64) -> &mut Canvas;
     fn fillText(&mut self, text: &str, x: f64, y: f64) -> &mut Canvas;
