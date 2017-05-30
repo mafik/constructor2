@@ -9,7 +9,7 @@ var canvas = document.getElementById('canvas');
 var ctx = canvas.getContext("2d", {"alpha": false});
 
 function drawCommand(c) {
-  window[w.type](w);
+  window[c.type](c);
 }
 
 function draw() {
@@ -43,11 +43,14 @@ function moveTo(cmd) { ctx.moveTo(cmd.x, cmd.y); }
 function lineTo(cmd) { ctx.lineTo(cmd.x, cmd.y); }
 function setLineDash(cmd) { ctx.setLineDash(cmd.val); }
 function rotate(cmd) { ctx.rotate(cmd.val); }
+function scale(cmd) { ctx.scale(cmd.val, cmd.val); }
 
 function fillStyle(cmd) { ctx.fillStyle = cmd.val; }
 function textAlign(cmd) { ctx.textAlign = cmd.val; }
+function textBaseline(cmd) { ctx.textBaseline = cmd.val; }
 function lineWidth(cmd) { ctx.lineWidth = cmd.val; }
 function strokeStyle(cmd) { ctx.strokeStyle = cmd.val; }
+function font(cmd) { ctx.font = cmd.val; }
 
 function save() { ctx.save(); }
 function restore() { ctx.restore(); }
@@ -65,7 +68,7 @@ var binds = [
   {"html": "onwheel",     "mvm": "wheel",     "x": "deltaX",  "y": "deltaY"},
   {"html": "onkeydown",   "mvm": "key_down",   "code": "code", "key": "key"},
   {"html": "onkeyup",     "mvm": "key_up",     "code": "code", "key": "key"},
-  {"html": "oncontextmenu", "mvm": "context_menu"},
+  {"html": "oncontextmenu"},
 ];
 
 function SocketMessage(e) {
@@ -123,12 +126,14 @@ function WindowResize(e) {
 
 function Bind(bind) {
   window[bind.html] = function(e) {
-    var o = { "type": bind.mvm };
-    for (var key in bind) {
-      if (key == "html" || key == "mvm") continue;
-      o[key] = e[bind[key]];
+    if (typeof bind.mvm != "undefined") {
+      var o = { "type": bind.mvm };
+      for (var key in bind) {
+	if (key == "html" || key == "mvm") continue;
+	o[key] = e[bind[key]];
+      }
+      socket.send(JSON.stringify(o));
     }
-    socket.send(JSON.stringify(o));
     e.preventDefault();
     return true;
   }

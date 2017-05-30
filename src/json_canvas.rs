@@ -1,20 +1,25 @@
 extern crate serde_json;
+extern crate rusttype;
 
+use std::rc::Rc;
 use canvas::Canvas;
+use rusttype::Font;
 
-struct JSONCanvas {
+pub struct JsonCanvas<'a> {
     count: i32,
     cmds: String,
+    font: Rc<Font<'a>>,
 }
 
-impl JSONCanvas {
-    fn new() -> JSONCanvas {
-        JSONCanvas {
+impl<'a> JsonCanvas<'a> {
+    pub fn new(font: Rc<Font<'a>>) -> JsonCanvas<'a> {
+        JsonCanvas {
             count: 0,
             cmds: "[".to_string(),
+            font: font,
         }
     }
-    fn append(&mut self, cmd: String) -> &mut JSONCanvas {
+    fn append(&mut self, cmd: String) -> &mut JsonCanvas<'a> {
         if self.count > 0 {
             self.cmds += ",";
         }
@@ -22,31 +27,35 @@ impl JSONCanvas {
         self.cmds += &cmd;
         self
     }
-    fn serialize(self) -> String {
+    pub fn serialize(self) -> String {
         self.cmds + "]"
     }
 }
 
-impl Canvas for JSONCanvas {
+impl<'a> Canvas for JsonCanvas<'a> {
+    fn get_font_metrics(&self, scale: f64) -> rusttype::VMetrics {
+        self.font
+            .v_metrics(rusttype::Scale {
+                           x: scale as f32,
+                           y: scale as f32,
+                       })
+    }
     fn translate(&mut self, x: f64, y: f64) -> &mut Canvas {
         self.append(format!(r#"{{"type":"translate","x":{},"y":{}}}"#, x, y))
     }
     fn fillText(&mut self, text: &str, x: f64, y: f64) -> &mut Canvas {
         let t = serde_json::to_string(text).unwrap();
-        self.append(format!(r#"{{"type":"fillText","text":"{}","x":{},"y":{}}}"#,
-                            t,
-                            x,
-                            y))
+        self.append(format!(r#"{{"type":"fillText","text":{},"x":{},"y":{}}}"#, t, x, y))
     }
     fn fillRect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"fillRect","x":{},"y":{},"width":{},"height":{}}}"#,
+        self.append(format!(r#"{{"type":"fillRect","x":{},"y":{},"w":{},"h":{}}}"#,
                             x,
                             y,
                             w,
                             h))
     }
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"rect","x":{},"y":{},"width":{},"height":{}}}"#,
+        self.append(format!(r#"{{"type":"rect","x":{},"y":{},"w":{},"h":{}}}"#,
                             x,
                             y,
                             w,
@@ -68,29 +77,36 @@ impl Canvas for JSONCanvas {
     }
     fn setLineDash(&mut self, dash: &Vec<f64>) -> &mut Canvas {
         let d = serde_json::to_string(dash).unwrap();
-        self.append(format!(r#"{{"type":"setLineDash","dash":{}}}"#, d))
+        self.append(format!(r#"{{"type":"setLineDash","val":{}}}"#, d))
     }
     fn rotate(&mut self, alpha: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"rotate","alpha":{}}}"#, alpha))
+        self.append(format!(r#"{{"type":"rotate","val":{}}}"#, alpha))
+    }
+    fn scale(&mut self, scale: f64) -> &mut Canvas {
+        self.append(format!(r#"{{"type":"scale","val":{}}}"#, scale))
     }
     fn fillStyle(&mut self, style: &str) -> &mut Canvas {
         let s = serde_json::to_string(style).unwrap();
-        self.append(format!(r#"{{"type":"fillStyle","style":{}}}"#, s))
+        self.append(format!(r#"{{"type":"fillStyle","val":{}}}"#, s))
     }
     fn textAlign(&mut self, align: &str) -> &mut Canvas {
         let a = serde_json::to_string(align).unwrap();
-        self.append(format!(r#"{{"type":"textAlign","align":{}}}"#, a))
+        self.append(format!(r#"{{"type":"textAlign","val":{}}}"#, a))
     }
     fn textBaseline(&mut self, baseline: &str) -> &mut Canvas {
         let b = serde_json::to_string(baseline).unwrap();
-        self.append(format!(r#"{{"type":"textBaseline","baseline":{}}}"#, b))
+        self.append(format!(r#"{{"type":"textBaseline","val":{}}}"#, b))
     }
     fn lineWidth(&mut self, width: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"lineWidth","width":{}}}"#, width))
+        self.append(format!(r#"{{"type":"lineWidth","val":{}}}"#, width))
     }
     fn strokeStyle(&mut self, style: &str) -> &mut Canvas {
         let s = serde_json::to_string(style).unwrap();
-        self.append(format!(r#"{{"type":"strokeStyle","style":{}}}"#, s))
+        self.append(format!(r#"{{"type":"strokeStyle","val":{}}}"#, s))
+    }
+    fn font(&mut self, font: &str) -> &mut Canvas {
+        let val = serde_json::to_string(font).unwrap();
+        self.append(format!(r#"{{"type":"font","val":{}}}"#, val))
     }
     fn save(&mut self) -> &mut Canvas {
         self.append(r#"{"type":"save"}"#.to_owned())
@@ -118,24 +134,24 @@ impl Canvas for JSONCanvas {
 #[cfg(test)]
 mod tests {
     use super::Canvas;
-    use super::JSONCanvas;
+    use super::JsonCanvas;
     use std::f64::consts::PI;
 
     #[test]
     fn translate() {
-        assert_eq!(JSONCanvas::new().translate(-1., 1.).serialize(),
+        assert_eq!(JsonCanvas::new().translate(-1., 1.).serialize(),
                    r#"[{"type":"translate","x":-1,"y":1}]"#);
     }
 
     #[test]
     fn fillText() {
-        assert_eq!(JSONCanvas::new().fillText("a b c", 1., 2.).serialize(),
+        assert_eq!(JsonCanvas::new().fillText("a b c", 1., 2.).serialize(),
                    r#"[{"type":"fillText","text":"a b c","x":1,"y":2}]"#);
     }
 
     #[test]
     fn fillText_edge_cases() {
-        assert_eq!(JSONCanvas::new().fillText("\\\"\"\\", 1., 2.).serialize(),
+        assert_eq!(JsonCanvas::new().fillText("\\\"\"\\", 1., 2.).serialize(),
                    r#"[{"type":"fillText","text":"\\\"\"\\","x":1,"y":2}]"#);
     }
 

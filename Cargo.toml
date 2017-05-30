@@ -7,3 +7,5 @@ authors = ["Marek Rogalski <mafikpl@gmail.com>"]
 hyper = "*"
 websocket = "*"
 serde_json = "1.0"
+euclid = "*"
+rusttype = "*"
