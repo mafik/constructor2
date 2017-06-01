@@ -14,7 +14,7 @@ function drawCommand(c) {
 
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#eee';
+  ctx.fillStyle = '#ddd';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#000';
   ctx.save();

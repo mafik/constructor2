@@ -1,11 +1,11 @@
 /*
 TODOs:
--
+- move per-client parameters to separate struct
 
 Milestones:
-1. Object that runs a command on click
-2. Command is fetched from another (text) object
-3. Command is fetched from several other (text) objects
+1. Object that runs a command on click (DONE)
+2. Command is fetched from another object
+3. Command is fetched from several other objects
 4. String objects are editable
 
 On hold:
@@ -22,8 +22,9 @@ extern crate rusttype;
 mod http;
 mod canvas;
 mod json_canvas;
+mod touch;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::thread;
 use std::sync::mpsc;
 use std::collections::HashMap;
@@ -31,31 +32,32 @@ use std::net::TcpStream;
 use serde_json::Value;
 use std::any::Any;
 use std::rc::{Rc, Weak};
-use std::cell::{Cell, RefCell, Ref};
+use std::cell::{RefCell, Ref, RefMut};
 use std::ops::Deref;
 
 use canvas::*;
 use json_canvas::*;
 use euclid::*;
 
-struct WorldSpace; // milimeters @ half meter
-struct PixelSpace;
+use touch::*;
 
-type WorldPoint = TypedPoint2D<f64, WorldSpace>;
-type WorldSize = TypedSize2D<f64, WorldSpace>;
-type PixelPoint = TypedPoint2D<f64, PixelSpace>;
+pub struct WorldSpace; // milimeters @ half meter
+pub struct PixelSpace;
 
+pub type WorldPoint = TypedPoint2D<f64, WorldSpace>;
+pub type WorldSize = TypedSize2D<f64, WorldSpace>;
+pub type PixelPoint = TypedPoint2D<f64, PixelSpace>;
 
 const MM_PER_INCH: f64 = 25.4;
 static FONT: &'static [u8] = include_bytes!("html/fonts/iosevka-regular.ttf");
 
-struct Window {
+struct Display {
     size: PixelPoint,
     dpi: f64,
     eye_distance_meters: f64,
 }
 
-impl Window {
+impl Display {
     fn pixel_size(&self) -> ScaleFactor<f64, PixelSpace, WorldSpace> {
         ScaleFactor::new(MM_PER_INCH / self.dpi / self.eye_distance_meters * 0.5)
     }
@@ -70,24 +72,28 @@ impl Window {
     fn setup_canvas(&self, canvas: &mut Canvas) {}
 }
 
-struct Vm<'a> {
+pub struct Vm {
     blueprints: Vec<Rc<RefCell<Blueprint>>>,
     active_blueprint: Weak<RefCell<Blueprint>>,
 
-    rx: mpsc::Receiver,
-    tx: mpsc::Sender,
-    center: WorldPoint,
-    window: Window,
-    websocket_clients: HashMap<i64, websocket::sender::Writer<_>>,
-    font: Rc<rusttype::Font<'a>>,
+    rx: mpsc::Receiver<Event>,
+    tx: mpsc::Sender<Event>,
+    websocket_clients: HashMap<i64, websocket::sender::Writer<std::net::TcpStream>>,
     client_counter: i64,
+    font: Rc<rusttype::Font<'static>>,
+
+    // Per-client parameters:
+    display: Display,
+    center: WorldPoint,
     mouse: PixelPoint,
-    nav_mode: bool,
     last_update: Instant,
+    mouse_handler: Option<Box<TouchReceiver>>,
 }
 
-impl<'a> Vm<'a> {
-    fn new() -> Rc<RefCell<Vm<'a>>> {
+struct VmCell(Rc<RefCell<Vm>>);
+
+impl Vm {
+    fn new() -> VmCell {
         let font_collection = rusttype::FontCollection::from_bytes(FONT);
         let font = Rc::new(font_collection.into_font().unwrap());
 
@@ -108,24 +114,24 @@ impl<'a> Vm<'a> {
             }
         });
 
-        Rc::new(RefCell::new(Vm {
-                                 blueprints: Vec::new(),
-                                 active_blueprint: Weak::new(),
-                                 rx: rx,
-                                 tx: tx,
-                                 center: WorldPoint::new(0., 0.),
-                                 window: Window {
-                                     size: PixelPoint::new(1024., 768.),
-                                     dpi: 96.,
-                                     eye_distance_meters: 0.5,
-                                 },
-                                 websocket_clients: HashMap::new(),
-                                 font: font,
-                                 client_counter: 0,
-                                 mouse: PixelPoint::new(0., 0.),
-                                 nav_mode: false,
-                                 last_update: Instant::now(),
-                             }))
+        VmCell(Rc::new(RefCell::new(Vm {
+            blueprints: Vec::new(),
+            active_blueprint: Weak::new(),
+            rx: rx,
+            tx: tx,
+            center: WorldPoint::new(0., 0.),
+            display: Display {
+                size: PixelPoint::new(1024., 768.),
+                dpi: 96.,
+                eye_distance_meters: 0.5,
+            },
+            websocket_clients: HashMap::new(),
+            font: font,
+            client_counter: 0,
+            mouse: PixelPoint::new(0., 0.),
+            last_update: Instant::now(),
+            mouse_handler: None,
+        })))
     }
 
     fn update_clients(&mut self) {
@@ -133,35 +139,47 @@ impl<'a> Vm<'a> {
         c.save();
         c.font(format!("{}px Iosevka", 6.).as_str());
 
-        c.translate(self.window.size.x / 2., self.window.size.y / 2.);
-        c.scale(self.window.pixel_size().inv().get());
+        c.translate(self.display.size.x / 2., self.display.size.y / 2.);
+        c.scale(self.display.pixel_size().inv().get());
         c.translate(self.center.x, self.center.y);
 
         self.draw(&mut c);
         c.restore();
         let json = c.serialize();
         let message = websocket::Message::text(json);
-        for (id, writer) in self.websocket_clients {
+        for (id, writer) in &mut self.websocket_clients {
             writer.send_message(&message);
         }
+        self.last_update = Instant::now();
     }
 
     fn draw(&self, c: &mut Canvas) {
-        let rc = self.active_blueprint.upgrade().unwrap();
-        rc.borrow().draw(c);
+        let blueprint_rc = self.active_blueprint.upgrade().unwrap();
+        let blueprint = blueprint_rc.borrow();
+        draw(&blueprint.links, c);
+        draw(&blueprint.frames, c);
     }
+}
 
-    fn run(&mut self) {
-
-        for message in self.rx.iter() {
+impl VmCell {
+    fn borrow(&self) -> Ref<Vm> {
+        self.0.borrow()
+    }
+    fn borrow_mut(&self) -> RefMut<Vm> {
+        self.0.borrow_mut()
+    }
+    fn run(&self) {
+        loop {
+            let message = self.borrow().rx.recv().unwrap();
             match message {
                 Event::NewWebsocketClient(mut client) => {
                     let (mut websocket_reader, websocket_writer) = client.split().unwrap();
-                    let client_number = client_counter;
+                    let client_number = self.borrow().client_counter;
                     println!("Client {} connected (websocket)", client_number);
-                    websocket_clients.insert(client_number, websocket_writer);
-                    client_counter += 1;
-                    let websocket_tx = tx.clone();
+                    self.borrow_mut().websocket_clients
+                        .insert(client_number, websocket_writer);
+                    self.borrow_mut().client_counter += 1;
+                    let websocket_tx = self.borrow().tx.clone();
                     thread::spawn(move || {
                         for message in websocket_reader.incoming_messages() {
                             let mut message: websocket::Message = match message {
@@ -189,47 +207,104 @@ impl<'a> Vm<'a> {
                 }
                 Event::WebsocketDisconnected(i) => {
                     println!("Client {} disconnected", i);
-                    websocket_clients.remove(&i);
+                    self.borrow_mut().websocket_clients.remove(&i);
                 }
                 Event::MouseDown {
                     x: x,
                     y: y,
                     button: button,
                 } => {
-                    if button == 1 {
-                        nav_mode = true;
+                    /* # Interaction modes
+                     *
+                     * Interaction modes describe how touch points (fingers on the screen / mouse pointer)
+                     * affect the interface.
+                     *
+                     * ## Navigation Mode
+                     *
+                     * On desktop enabled by holding the middle mouse button or Left Shift.
+                     * On mobile enabled by holding the navigation button.
+                     *
+                     * While in navigation mode, touch points are locked to their initial positions in
+                     * the world space. Window viewport is adjusted to maintain this constraint.
+                     *
+                     * Moving cursor / finger moves the window in the opposing direction.
+                     *
+                     * Scrolling / pinching scales the window and keeps the effect.
+                     * 
+                     * Dragging the navigation button scales the window temporarily.
+                     *
+                     * ## Immediate Mode
+                     *
+                     * On desktop this mode is controlled by the left mouse button.
+                     * On mobile enabled by holding the immediate button.
+                     *
+                     * Touching an element of the interface invokes default action. Usually movement.
+                     *
+                     * The action happens in the world space.
+                     *
+                     * ## Menu Mode
+                     *
+                     * On desktop this mode is controlled by the right mouse button.
+                     * On mobile this is the default mode.
+                     *
+                     * Holding the touch point starts the menu in drag mode. Releasing the button quickly
+                     * opens the menu in persistent mode.
+                     *
+                     * Opens a screen space menu with actions.
+                     *
+                     * Activating an action moves the interaction to the world space.
+                     */
+                    let mut vm = self.borrow_mut();
+                    if vm.mouse_handler.is_some() {
+                        continue;
                     }
-                    println!("Mouse button {} pressed at {} x {}", button, x, y);
+                    let mut frames;
+                    {
+                        let blueprint = vm.active_blueprint.upgrade().unwrap();
+                        let blueprint = blueprint.borrow();
+                        frames = blueprint.frames.clone();
+                    }
+                    let pixel_point = PixelPoint::new(x, y);
+                    let world_point = vm.display.to_world(pixel_point) - vm.center;
+                    vm.mouse_handler = match button {
+                        0 => start_touch(&frames, &world_point),
+                        1 => Some(Box::new(NavTouchReceiver{ vm: Rc::downgrade(&self.0), pos: world_point })),
+                        2 => {
+                            //blueprint.start_touch_menu(x, y)
+                            None
+                        }
+                        _ => None
+                    }
                 }
                 Event::MouseUp {
                     x: x,
                     y: y,
                     button: button,
                 } => {
-                    if button == 1 {
-                        nav_mode = false;
-                    }
+                    self.borrow_mut().mouse_handler = None;
                 }
                 Event::MouseMove { x: x, y: y } => {
-                    let old_mouse = mouse.clone();
-                    mouse = PixelPoint::new(x, y);
-                    let delta = mouse - old_mouse;
-                    let world_delta = delta * window.pixel_size();
-                    if nav_mode {
-                        center = center + world_delta;
-                        println!("Sent update");
-                        update_clients(&window, &mut websocket_clients, &center);
-                        last_update = Instant::now();
+                    self.borrow_mut().mouse = PixelPoint::new(x, y);
+
+                    let opt = self.borrow_mut().mouse_handler.take();
+                    let opt = opt.and_then(|b| {
+                        let world_point = self.borrow().display.to_world(self.borrow().mouse) - self.borrow().center;
+                        b.continue_touch(world_point)
+                     });
+                    self.borrow_mut().mouse_handler = opt;
+                    
+                    if self.borrow().mouse_handler.is_some() {
+                        self.borrow_mut().update_clients();
                     }
                 }
-                Event::WindowSize {
+                Event::DisplaySize {
                     width: w,
                     height: h,
                 } => {
-                    window.size = PixelPoint::new(w, h);
-                    println!("Window size is {} x {} px", w, h);
-                    update_clients(&window, &mut websocket_clients, &center);
-                    last_update = Instant::now();
+                    let mut vm = self.borrow_mut();
+                    vm.display.size = PixelPoint::new(w, h);
+                    println!("Display size is {} x {} px", w, h);
+                    vm.update_clients();
                 }
                 Event::RenderingDone => {
                     /*
@@ -245,6 +320,14 @@ impl<'a> Vm<'a> {
                          (dur.as_secs() as f64) * 1000. + (dur.subsec_nanos() as f64) / 1000000.);
                  */
                 }
+                Event::MouseWheel { x: x, y: y } => {
+                    let mut vm = self.borrow_mut();
+                    let start = vm.display.to_world(vm.mouse) - vm.center;
+                    vm.display.eye_distance_meters *= (y/-200.).exp();
+                    let end = vm.display.to_world(vm.mouse) - vm.center;
+                    vm.center = vm.center - start + end;
+                    vm.update_clients();
+                }
                 _ => {}
             }
         }
@@ -258,6 +341,16 @@ struct Blueprint {
     links: Vec<Rc<RefCell<Link>>>,
     machines: Vec<Rc<RefCell<Machine>>>,
     active_machine: Weak<RefCell<Machine>>,
+}
+
+trait TouchReceiver {
+    fn continue_touch(&self, p: WorldPoint) -> Option<Box<TouchReceiver>>;
+    fn end_touch(&self);
+}
+
+trait Visible {
+    fn draw(&self, c: &mut Canvas);
+    fn start_touch(&self, p: &WorldPoint) -> Option<Box<TouchReceiver>>;
 }
 
 impl Blueprint {
@@ -278,56 +371,214 @@ impl Blueprint {
         return b;
     }
 
-    fn draw(&self, c: &mut Canvas) {
-        let global_machine_borrow = self.machines[0].borrow();
-        let global_machine: &Machine = global_machine_borrow.deref();
-        let local_machine_rc = self.active_machine.upgrade().unwrap();
-        let local_machine_borrow = local_machine_rc.borrow();
-        let local_machine: &Machine = local_machine_borrow.deref();
+    /*
+    Blueprint is a list of several elements drawn in a "draw-order".
+    On mouse movement, the same elements are considered in a reverse-draw-order.
+    Those elements are:
+    - links
+    - parameters
+    - frames (objects)
+    - UI toggles
+     */
 
-        for frame_cell in self.frames.iter() {
-            let frame = frame_cell.borrow();
-            c.save();
-            c.translate(frame.pos.x, frame.pos.y);
-            let machine = if frame.global {
-                global_machine
-            } else {
-                local_machine
-            };
-            let o = machine
-                .objects
-                .iter()
-                .find(|o| Rc::ptr_eq(&o.frame, frame_cell))
-                .unwrap();
-            frame.draw(c, o);
-            c.restore();
+    fn with_object<F: FnMut(&mut Object)>(&self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
+        let frame = frame_rc.borrow();
+        let machine_rc = if frame.global {
+            self.machines[0].clone()
+        } else {
+            self.active_machine.upgrade().unwrap()
+        };
+        let mut machine = machine_rc.borrow_mut();
+        let object = machine
+            .objects
+            .iter_mut()
+            .find(|o| Rc::ptr_eq(&o.frame, frame_rc))
+            .unwrap();
+        f(object);
+    }
+}
+
+fn start_touch<V: Visible>(v: &Vec<V>, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+    walk_visible(v, |elem| { elem.start_touch(p) })
+}
+
+fn draw<V: Visible>(v: &Vec<V>, c: &mut Canvas) {
+    walk_visible(v, |elem| -> Option<()> {
+        c.save();
+        elem.draw(c);
+        c.restore();
+        None
+    });
+}
+
+fn walk_visible<V: Visible, T, F: FnMut(&Visible)->Option<T>>(v: &Vec<V>, mut f: F) -> Option<T> {
+    for visible in v.iter() {
+        let result = f(visible as &Visible);
+        if result.is_some() {
+            return result;
+        }
+    }
+    return None
+}
+
+struct FrameParam{
+    frame: Rc<RefCell<Frame>>,
+    param_index: usize,
+}
+
+impl FrameParam {
+    fn center(&self) -> WorldPoint {
+        let frame = self.frame.borrow();
+        frame.pos + WorldPoint::new(
+            0.0,
+            frame.size.height * 0.5 + -PARAM_RADIUS + (PARAM_RADIUS * 2. + PARAM_SPACING) * (self.param_index as f64 + 1.),
+        )
+    }
+}
+
+impl Visible for FrameParam {
+    fn draw(&self, c: &mut Canvas) {
+        let center = self.center();
+        let param = &self.frame.borrow().typ.parameters[self.param_index];
+        c.beginPath();
+        c.arc(center.x, center.y, PARAM_RADIUS, 0.0, std::f64::consts::PI * 2.);
+        c.fillStyle("white");
+        c.fill();
+        c.fillStyle("black");
+        c.fillText(param.name, center.x + PARAM_RADIUS + PARAM_SPACING, center.y);
+    }
+    fn start_touch(&self, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+        let center = self.center();
+        let q = *p - center;
+        let dist = q.dot(q).sqrt();
+        if dist < PARAM_RADIUS {
+            let frame = self.frame.borrow();
+            let blueprint_rc = frame.blueprint.upgrade().unwrap();
+            let mut blueprint = blueprint_rc.borrow_mut();
+            let link_rc = Rc::new(RefCell::new(Link {
+                blueprint: frame.blueprint.clone(),
+                a: LinkTerminator::Frame(self.frame.clone()),
+                b: LinkTerminator::Point(*p),
+                param_index: self.param_index,
+                order: 0,
+            }));
+            blueprint.links.push(link_rc.clone());
+            Some(Box::new(DragLink{
+                side: LinkSide::B,
+                link: link_rc,
+                pos: *p,
+            }))
+        } else {
+            None
         }
     }
 }
 
-struct Frame {
+impl Visible for Rc<RefCell<Frame>> {
+    fn draw(&self, c: &mut Canvas) {
+        let frame = self.borrow();
+        if frame.typ.parameters.len() > 0 {
+            c.strokeStyle("#888");
+            c.beginPath();
+            let last_frame_param = FrameParam{frame: self.clone(), param_index: frame.typ.parameters.len() - 1};
+            let last_param_center = last_frame_param.center();
+            c.moveTo(frame.pos.x, frame.pos.y);
+            c.lineTo(last_param_center.x, last_param_center.y);
+            c.stroke();
+        }
+        for param_index in 0..frame.typ.parameters.len() {
+            let frame_param = FrameParam{frame: self.clone(), param_index: param_index,};
+            frame_param.draw(c);
+        }
+        c.translate(frame.pos.x, frame.pos.y);
+        c.fillStyle("white");
+        c.translate(-frame.size.width / 2., -frame.size.height / 2.);
+        c.fillRect(0., 0., frame.size.width, frame.size.height);
+        c.fillStyle("black");
+        c.fillText(frame.typ.name, 0., 0.);
+        c.beginPath();
+        c.rect(0., 0., frame.size.width, frame.size.height);
+        c.clip();
+        let blueprint_rc = frame.blueprint.upgrade().unwrap();
+        let blueprint = blueprint_rc.borrow();
+        blueprint.with_object(self, |o| {
+            (frame.typ.draw)(o, c);
+        });
+    }
+    fn start_touch(&self, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+        // TODO: move this to touch::drag
+        let mut q;
+        let mut s;
+        let mut param_count;
+        {
+            let frame = self.borrow();
+            q = *p - frame.pos;
+            s = frame.size * 0.5;
+            param_count = frame.typ.parameters.len();
+        }
+        fn range_check(x: f64, range: f64) -> bool {
+            x < range && x > -range
+        }
+        let hit = range_check(q.x, s.width) && range_check(q.y, s.height);
+        
+        if hit {
+            // TODO: query object type
+            //let args = Args(vec![]);
+            //(frame.typ.run)(&args);
+            let s2 = s * 0.5;
+            fn choose_drag_mode(x: f64, range: f64) -> DragMode {
+                if x < -range {
+                    DragMode::StretchLow
+                } else if x > range {
+                    DragMode::StretchHigh
+                } else {
+                    DragMode::Drag
+                }
+            }            
+            Some(Box::new(DragFrame{
+                horizontal: choose_drag_mode(q.x, s2.width),
+                vertical: choose_drag_mode(q.y, s2.height),
+                frame: self.clone(),
+                pos: p.clone(),
+            }))
+        } else {
+            for param_index in 0..param_count {
+                let frame_param = FrameParam{ frame: self.clone(), param_index: param_index, };
+                let touch_receiver = frame_param.start_touch(p);
+                if touch_receiver.is_some() {
+                    return touch_receiver;
+                }
+            }
+            None
+        }
+    }
+}
+
+pub struct Frame {
     blueprint: Weak<RefCell<Blueprint>>,
     typ: &'static Type,
     pos: WorldPoint,
     size: WorldSize,
     global: bool,
 }
+    
+const PARAM_RADIUS: f64 = 5.;
+const PARAM_SPACING: f64 = 2.;
 
 impl Frame {
     fn new(typ: &'static Type,
-           blueprint_cell: &Rc<RefCell<Blueprint>>,
+           blueprint: &Rc<RefCell<Blueprint>>,
            global: bool)
            -> Rc<RefCell<Frame>> {
         let f = Rc::new(RefCell::new(Frame {
-                                         blueprint: Rc::downgrade(blueprint_cell),
-                                         typ: typ,
-                                         pos: WorldPoint::zero(),
-                                         size: WorldSize::new(10., 10.),
-                                         global: global,
-                                     }));
-        let mut blueprint = blueprint_cell.borrow_mut();
-        blueprint.frames.push(f.clone());
-        for machine_cell in blueprint.machines.iter() {
+            blueprint: Rc::downgrade(blueprint),
+            typ: typ,
+            pos: WorldPoint::zero(),
+            size: WorldSize::new(10., 10.),
+            global: global,
+        }));
+        blueprint.borrow_mut().frames.push(f.clone());
+        for machine_cell in blueprint.borrow().machines.iter() {
             let mut machine = machine_cell.borrow_mut();
             let mut object = Object {
                 machine: Rc::downgrade(machine_cell),
@@ -344,24 +595,53 @@ impl Frame {
         }
         return f;
     }
+}
 
-    fn draw(&self, c: &mut Canvas, o: &Object) {
-        c.translate(-self.size.width / 2., -self.size.height / 2.);
-        c.fillStyle("white");
-        c.fillRect(0., 0., self.size.width, self.size.height);
-        c.fillStyle("black");
-        c.fillText(self.typ.name, 0., 0.);
-        (self.typ.draw)(o, c);
+enum LinkTerminator {
+    Frame(Rc<RefCell<Frame>>),
+    Point(WorldPoint),
+}
+
+impl LinkTerminator {
+    fn get_pos(&self)->WorldPoint {
+        match self {
+            &LinkTerminator::Frame(ref frame) => {
+                let frame = frame.borrow();
+                frame.pos
+            }
+            &LinkTerminator::Point(point) => point,
+        }
     }
 }
 
-
-struct Link {
+pub struct Link {
     blueprint: Weak<RefCell<Blueprint>>,
-    a: Rc<Frame>,
-    b: Rc<Frame>,
-    param_i: i32,
+    a: LinkTerminator,
+    b: LinkTerminator,
+    param_index: usize,
     order: i32,
+}
+
+impl Visible for Rc<RefCell<Link>> {
+    fn draw(&self, c: &mut Canvas) {
+        let link = self.borrow();
+        let start = link.a.get_pos();
+        let end = link.b.get_pos();
+        
+        //if link.a.is_some() {
+        //    let a_rc = link.a.clone().unwrap();
+        //    let frame_param = FrameParam{ frame: a_rc.clone(), param_index: link.param_index };
+        //    let start = frame_param.center();
+        c.strokeStyle("1px solid black");
+        c.beginPath();
+        c.moveTo(start.x, start.y);
+        c.lineTo(end.x, end.y);
+        c.stroke();
+        
+    }
+    fn start_touch(&self, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+        None
+    }
 }
 
 struct Machine {
@@ -370,13 +650,13 @@ struct Machine {
 }
 
 impl Machine {
-    fn new(blueprint_cell: &Rc<RefCell<Blueprint>>, activate: bool) -> Rc<RefCell<Machine>> {
-        let mut blueprint = blueprint_cell.borrow_mut();
+    fn new(blueprint: &Rc<RefCell<Blueprint>>, activate: bool) -> Rc<RefCell<Machine>> {
         let m = Rc::new(RefCell::new(Machine {
-                                         blueprint: Rc::downgrade(blueprint_cell),
+                                         blueprint: Rc::downgrade(blueprint),
                                          objects: Vec::new(),
                                      }));
         // TODO: init all objects (from blueprint frames)
+        let mut blueprint = blueprint.borrow_mut();
         if activate {
             blueprint.active_machine = Rc::downgrade(&m);
         };
@@ -429,15 +709,30 @@ static text_type: Type = Type {
 
 static process_type: Type = Type {
     name: "Process",
-    parameters: &[],
+    parameters: &[
+        Parameter {
+            name: "Command",
+            runnable: false,
+            output: false,
+        },
+    ],
     init: &|o: &mut Object| {},
-    run: &|args: &Args| {},
+    run: &|args: &Args| {
+        println!("Executing Process");
+        let mut child = std::process::Command::new("/bin/ls")
+            .arg("/home/mrogalski")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to execute ls");
+        let output = child.wait_with_output().expect("failed to wait on ls");
+        println!("Result: {}", String::from_utf8(output.stdout).unwrap());
+    },
     draw: &|o: &Object, canvas: &mut Canvas| {},
 };
 
 fn main() {
     let vm = Vm::new();
-    let blueprint = Blueprint::new(&vm, "Default".to_string(), true);
+    let blueprint = Blueprint::new(&vm.0, "Default".to_string(), true);
     Machine::new(&blueprint, true);
     let text_frame = Frame::new(&text_type, &blueprint, true);
     {
@@ -455,7 +750,7 @@ enum Event {
     WebsocketDisconnected(i64),
     RenderingReady, // sent when next frame is ready for commands
     RenderingDone, // sent after all rendering commands are flushed
-    WindowSize { width: f64, height: f64 },
+    DisplaySize { width: f64, height: f64 },
     MouseMove { x: f64, y: f64 },
     MouseWheel { x: f64, y: f64 },
     MouseDown { x: f64, y: f64, button: i64 },
@@ -472,7 +767,7 @@ impl Event {
 
         match typ.as_ref() {
             "size" => {
-                Some(Event::WindowSize {
+                Some(Event::DisplaySize {
                          width: obj.get("width").unwrap().as_f64().unwrap(),
                          height: obj.get("height").unwrap().as_f64().unwrap(),
                      })
