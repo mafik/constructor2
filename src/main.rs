@@ -34,6 +34,7 @@ use std::any::Any;
 use std::rc::{Rc, Weak};
 use std::cell::{RefCell, Ref, RefMut};
 use std::ops::Deref;
+use std::f64::consts::PI;
 
 use canvas::*;
 use json_canvas::*;
@@ -156,8 +157,8 @@ impl Vm {
     fn draw(&self, c: &mut Canvas) {
         let blueprint_rc = self.active_blueprint.upgrade().unwrap();
         let blueprint = blueprint_rc.borrow();
-        draw(&blueprint.links, c);
         draw(&blueprint.frames, c);
+        draw(&blueprint.links, c);
     }
 }
 
@@ -421,6 +422,7 @@ fn walk_visible<V: Visible, T, F: FnMut(&Visible)->Option<T>>(v: &Vec<V>, mut f:
     return None
 }
 
+#[derive(Clone)]
 struct FrameParam{
     frame: Rc<RefCell<Frame>>,
     param_index: usize,
@@ -457,7 +459,7 @@ impl Visible for FrameParam {
             let mut blueprint = blueprint_rc.borrow_mut();
             let link_rc = Rc::new(RefCell::new(Link {
                 blueprint: frame.blueprint.clone(),
-                a: LinkTerminator::Frame(self.frame.clone()),
+                a: LinkTerminator::FrameParam(self.clone()),
                 b: LinkTerminator::Point(*p),
                 param_index: self.param_index,
                 order: 0,
@@ -598,17 +600,14 @@ impl Frame {
 }
 
 enum LinkTerminator {
-    Frame(Rc<RefCell<Frame>>),
+    FrameParam(FrameParam),
     Point(WorldPoint),
 }
 
 impl LinkTerminator {
     fn get_pos(&self)->WorldPoint {
         match self {
-            &LinkTerminator::Frame(ref frame) => {
-                let frame = frame.borrow();
-                frame.pos
-            }
+            &LinkTerminator::FrameParam(ref frame_param) => frame_param.center(),
             &LinkTerminator::Point(point) => point,
         }
     }
@@ -627,17 +626,39 @@ impl Visible for Rc<RefCell<Link>> {
         let link = self.borrow();
         let start = link.a.get_pos();
         let end = link.b.get_pos();
-        
-        //if link.a.is_some() {
-        //    let a_rc = link.a.clone().unwrap();
-        //    let frame_param = FrameParam{ frame: a_rc.clone(), param_index: link.param_index };
-        //    let start = frame_param.center();
-        c.strokeStyle("1px solid black");
+        let v = start - end;
+        let length2 = v.dot(v);
+        let length = length2.sqrt();
+        let angle = (-v.y).atan2(-v.x);
+
+        c.save();
+        c.translate(start.x, start.y);
+        c.rotate(angle);
+        c.fillStyle("#000");
+        c.fillCircle(0., 0., PARAM_RADIUS * 0.5);
+
+        const ARROW_WIDTH: f64 = PARAM_RADIUS * 0.5;
+        const ARROW_LENGTH: f64 = 5.0;
+
+        c.strokeStyle("#000");
         c.beginPath();
-        c.moveTo(start.x, start.y);
-        c.lineTo(end.x, end.y);
+        c.moveTo(0., 0.);
+        c.lineTo(length - ARROW_LENGTH * 0.5, 0.);
         c.stroke();
+
+        let vlen = length.max(PARAM_RADIUS * 2.0) * 0.05;
+        let tanh = vlen.tanh();
+        let r = ARROW_WIDTH / (vlen + 1.0);
+        let l = ARROW_LENGTH * tanh;
+        let l = l.max(r + 1.0);
+        let a = PI * 0.5 * (1.0 - tanh);
+
+        c.beginPath();
+        c.ellipse(length - l, 0., r, ARROW_WIDTH, 0., PI*0.5 - a, PI*1.5 + a, false);
+        c.lineTo(length, 0.);
+        c.fill();
         
+        c.restore();
     }
     fn start_touch(&self, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
         None

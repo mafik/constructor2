@@ -1,5 +1,7 @@
 extern crate rusttype;
 
+use std;
+
 #[allow(non_snake_case)]
 pub trait Canvas {
     fn translate(&mut self, x: f64, y: f64) -> &mut Canvas;
@@ -7,6 +9,16 @@ pub trait Canvas {
     fn fillRect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas;
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas;
     fn arc(&mut self, x: f64, y: f64, r: f64, alpha: f64, beta: f64) -> &mut Canvas;
+    fn ellipse(&mut self,
+               x: f64,
+               y: f64,
+               rx: f64,
+               ry: f64,
+               rotation: f64,
+               alpha: f64,
+               beta: f64,
+               anticlockwise: bool)
+               -> &mut Canvas;
     fn moveTo(&mut self, x: f64, y: f64) -> &mut Canvas;
     fn lineTo(&mut self, x: f64, y: f64) -> &mut Canvas;
     fn setLineDash(&mut self, dash: &Vec<f64>) -> &mut Canvas;
@@ -27,4 +39,9 @@ pub trait Canvas {
     fn clip(&mut self) -> &mut Canvas;
 
     fn get_font_metrics(&self, scale: f64) -> rusttype::VMetrics;
+    fn fillCircle(&mut self, x: f64, y: f64, r: f64) -> &mut Canvas {
+        self.beginPath()
+            .arc(x, y, r, 0.0, std::f64::consts::PI * 2.)
+            .fill()
+    }
 }

@@ -39,6 +39,7 @@ function fillText(cmd) { ctx.fillText(cmd.text, cmd.x, cmd.y); }
 function fillRect(cmd) { ctx.fillRect(cmd.x, cmd.y, cmd.w, cmd.h); }
 function rect(cmd) { ctx.rect(cmd.x, cmd.y, cmd.w, cmd.h); }
 function arc(cmd) { ctx.arc(cmd.x, cmd.y, cmd.r, cmd.alpha, cmd.beta); }
+function ellipse(cmd) { ctx.ellipse(cmd.x, cmd.y, cmd.rx, cmd.ry, cmd.rotation, cmd.alpha, cmd.beta, cmd.anticlockwise); }
 function moveTo(cmd) { ctx.moveTo(cmd.x, cmd.y); }
 function lineTo(cmd) { ctx.lineTo(cmd.x, cmd.y); }
 function setLineDash(cmd) { ctx.setLineDash(cmd.val); }

@@ -69,6 +69,17 @@ impl<'a> Canvas for JsonCanvas<'a> {
                             alpha,
                             beta))
     }
+    fn ellipse(&mut self, x: f64, y: f64, rx: f64, ry: f64, rotation: f64, alpha: f64, beta: f64, anticlockwise: bool) -> &mut Canvas {
+        self.append(format!(r#"{{"type":"ellipse","x":{},"y":{},"rx":{},"ry":{},"rotation":{},"alpha":{},"beta":{},"anticlockwise":{}}}"#,
+                            x,
+                            y,
+                            rx,
+                            ry,
+                            rotation,
+                            alpha,
+                            beta,
+                            anticlockwise))
+    }
     fn moveTo(&mut self, x: f64, y: f64) -> &mut Canvas {
         self.append(format!(r#"{{"type":"moveTo","x":{},"y":{}}}"#, x, y))
     }
