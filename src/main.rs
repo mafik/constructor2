@@ -432,7 +432,7 @@ impl FrameParam {
     fn center(&self) -> WorldPoint {
         let frame = self.frame.borrow();
         frame.pos + WorldPoint::new(
-            0.0,
+            PARAM_RADIUS - frame.size.width * 0.5,
             frame.size.height * 0.5 + -PARAM_RADIUS + (PARAM_RADIUS * 2. + PARAM_SPACING) * (self.param_index as f64 + 1.),
         )
     }
@@ -461,7 +461,6 @@ impl Visible for FrameParam {
                 blueprint: frame.blueprint.clone(),
                 a: LinkTerminator::FrameParam(self.clone()),
                 b: LinkTerminator::Point(*p),
-                param_index: self.param_index,
                 order: 0,
             }));
             blueprint.links.push(link_rc.clone());
@@ -617,7 +616,6 @@ pub struct Link {
     blueprint: Weak<RefCell<Blueprint>>,
     a: LinkTerminator,
     b: LinkTerminator,
-    param_index: usize,
     order: i32,
 }
 
