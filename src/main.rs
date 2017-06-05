@@ -357,15 +357,6 @@ pub struct Object {
     data: Box<Any>,
 }
 
-type TaskArg = Vec<Weak<RefCell<Frame>>>;
-type TaskArgs = Vec<TaskArg>;
-
-struct Task {
-    machine: Weak<RefCell<Machine>>,
-    frame: Weak<RefCell<Frame>>,
-    args: TaskArgs,
-}
-
 type ObjectCell = Rc<RefCell<Object>>;
 type RunArg = Vec<ObjectCell>;
 type RunArgs = Vec<RunArg>;
