@@ -23,11 +23,13 @@ mod http;
 mod canvas;
 mod json_canvas;
 mod touch;
+mod machine;
+mod blueprint;
 
 use std::time::Instant;
 use std::thread;
 use std::sync::mpsc;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::TcpStream;
 use serde_json::Value;
 use std::any::Any;
@@ -41,6 +43,8 @@ use json_canvas::*;
 use euclid::*;
 
 use touch::*;
+use machine::*;
+use blueprint::*;
 
 pub struct WorldSpace; // milimeters @ half meter
 pub struct PixelSpace;
@@ -77,6 +81,8 @@ pub struct Vm {
     blueprints: Vec<Rc<RefCell<Blueprint>>>,
     active_blueprint: Weak<RefCell<Blueprint>>,
 
+    tasks: VecDeque<Task>,
+
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
     websocket_clients: HashMap<i64, websocket::sender::Writer<std::net::TcpStream>>,
@@ -94,6 +100,35 @@ pub struct Vm {
 struct VmCell(Rc<RefCell<Vm>>);
 
 impl Vm {
+    fn query_task(&self) -> Option<Task> {
+        let world_point = self.display.to_world(self.mouse) - self.center;
+        let blueprint_rc = self.active_blueprint.upgrade().unwrap();
+        let blueprint = blueprint_rc.borrow();
+        let frame_rc = blueprint.query_frame(world_point);
+        if frame_rc.is_none() { return None; }
+        let frame_rc = frame_rc.unwrap();
+        let mut task = Task {
+            machine: blueprint.active_machine.clone(),
+            frame: Rc::downgrade(&frame_rc),
+            args: vec![],
+        };
+        for param in frame_rc.borrow().typ.parameters {
+            task.args.push(vec![]);
+        }
+        for link_rc in blueprint.links.iter() {
+            let link = link_rc.borrow();
+            if let &LinkTerminator::FrameParam(FrameParam {
+                frame: ref frame_a,
+                param_index: param_index,
+            }) = &link.a {
+                if !Rc::ptr_eq(frame_a, &frame_rc) { continue; }
+                if let &LinkTerminator::Frame(ref frame_b) = &link.b {
+                    task.args[param_index].push(Rc::downgrade(frame_b));
+                }
+            }
+        }
+        return Some(task);
+    }
     fn new() -> VmCell {
         let font_collection = rusttype::FontCollection::from_bytes(FONT);
         let font = Rc::new(font_collection.into_font().unwrap());
@@ -118,6 +153,7 @@ impl Vm {
         VmCell(Rc::new(RefCell::new(Vm {
             blueprints: Vec::new(),
             active_blueprint: Weak::new(),
+            tasks: VecDeque::new(),
             rx: rx,
             tx: tx,
             center: WorldPoint::new(0., 0.),
@@ -282,7 +318,12 @@ impl VmCell {
                     y: y,
                     button: button,
                 } => {
-                    self.borrow_mut().mouse_handler = None;
+                    let mut vm = self.borrow_mut();
+                    match vm.mouse_handler.take() {
+                        Some(touch_receiver) => touch_receiver.end_touch(),
+                        None => (),
+                    }
+                    vm.update_clients();
                 }
                 Event::MouseMove { x: x, y: y } => {
                     self.borrow_mut().mouse = PixelPoint::new(x, y);
@@ -298,6 +339,15 @@ impl VmCell {
                         self.borrow_mut().update_clients();
                     }
                 }
+                Event::KeyDown { code: code, key: key } => {
+                    println!("Pressed key {}, code {}", key, code);
+                    if code == "Enter" {
+                        let mut vm = self.borrow_mut();
+                        if let Some(task) = vm.query_task() {
+                            vm.tasks.push_back(task);
+                        }
+                    }
+                }
                 Event::DisplaySize {
                     width: w,
                     height: h,
@@ -309,10 +359,10 @@ impl VmCell {
                 }
                 Event::RenderingDone => {
                     /*
-                let dur = last_update.elapsed();
-                println!("Rendering done ({} ms)",
-                         (dur.as_secs() as f64) * 1000. + (dur.subsec_nanos() as f64) / 1000000.);
-*/
+                    let dur = last_update.elapsed();
+                    println!("Rendering done ({} ms)",
+                    (dur.as_secs() as f64) * 1000. + (dur.subsec_nanos() as f64) / 1000000.);
+                     */
                 }
                 Event::RenderingReady => {
                     /*
@@ -335,15 +385,6 @@ impl VmCell {
     }
 }
 
-struct Blueprint {
-    vm: Weak<RefCell<Vm>>,
-    name: String,
-    frames: Vec<Rc<RefCell<Frame>>>,
-    links: Vec<Rc<RefCell<Link>>>,
-    machines: Vec<Rc<RefCell<Machine>>>,
-    active_machine: Weak<RefCell<Machine>>,
-}
-
 trait TouchReceiver {
     fn continue_touch(&self, p: WorldPoint) -> Option<Box<TouchReceiver>>;
     fn end_touch(&self);
@@ -352,51 +393,6 @@ trait TouchReceiver {
 trait Visible {
     fn draw(&self, c: &mut Canvas);
     fn start_touch(&self, p: &WorldPoint) -> Option<Box<TouchReceiver>>;
-}
-
-impl Blueprint {
-    fn new(vm_cell: &Rc<RefCell<Vm>>, name: String, activate: bool) -> Rc<RefCell<Blueprint>> {
-        let mut vm = vm_cell.borrow_mut();
-        let b = Rc::new(RefCell::new(Blueprint {
-                                         vm: Rc::downgrade(vm_cell),
-                                         name: name,
-                                         frames: Vec::new(),
-                                         links: Vec::new(),
-                                         machines: Vec::new(),
-                                         active_machine: Weak::new(),
-                                     }));
-        if activate {
-            vm.active_blueprint = Rc::downgrade(&b);
-        }
-        vm.blueprints.push(b.clone());
-        return b;
-    }
-
-    /*
-    Blueprint is a list of several elements drawn in a "draw-order".
-    On mouse movement, the same elements are considered in a reverse-draw-order.
-    Those elements are:
-    - links
-    - parameters
-    - frames (objects)
-    - UI toggles
-     */
-
-    fn with_object<F: FnMut(&mut Object)>(&self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
-        let frame = frame_rc.borrow();
-        let machine_rc = if frame.global {
-            self.machines[0].clone()
-        } else {
-            self.active_machine.upgrade().unwrap()
-        };
-        let mut machine = machine_rc.borrow_mut();
-        let object = machine
-            .objects
-            .iter_mut()
-            .find(|o| Rc::ptr_eq(&o.frame, frame_rc))
-            .unwrap();
-        f(object);
-    }
 }
 
 fn start_touch<V: Visible>(v: &Vec<V>, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
@@ -483,8 +479,9 @@ impl Visible for Rc<RefCell<Frame>> {
             c.beginPath();
             let last_frame_param = FrameParam{frame: self.clone(), param_index: frame.typ.parameters.len() - 1};
             let last_param_center = last_frame_param.center();
-            c.moveTo(frame.pos.x, frame.pos.y);
-            c.lineTo(last_param_center.x, last_param_center.y);
+            c.moveTo(last_param_center.x, last_param_center.y);
+            let end = frame.box_cast(&last_param_center);
+            c.lineTo(end.x, end.y);
             c.stroke();
         }
         for param_index in 0..frame.typ.parameters.len() {
@@ -523,9 +520,6 @@ impl Visible for Rc<RefCell<Frame>> {
         let hit = range_check(q.x, s.width) && range_check(q.y, s.height);
         
         if hit {
-            // TODO: query object type
-            //let args = Args(vec![]);
-            //(frame.typ.run)(&args);
             let s2 = s * 0.5;
             fn choose_drag_mode(x: f64, range: f64) -> DragMode {
                 if x < -range {
@@ -589,25 +583,52 @@ impl Frame {
                 data: Box::new(()),
             };
             (typ.init)(&mut object);
-            machine.objects.push(object);
+            machine.push(object);
             if global {
                 break;
             }
         }
         return f;
     }
+    fn hit_test(&self, p: &WorldPoint) -> bool {
+        let q = *p - self.pos;
+        let s = self.size * 0.5;
+        fn range_check(x: f64, range: f64) -> bool {
+            x < range && x > -range
+        }
+        range_check(q.x, s.width) && range_check(q.y, s.height)
+    }
+    fn box_cast(&self, p: &WorldPoint) -> WorldPoint {
+        let p = *p - self.pos;
+        let s = self.size * 0.5;
+        let clamp = |value|
+            if value < -1. { -1. }
+            else if value > 1. { 1. }
+            else { value };
+        let (x, y) = (p.x / s.width, p.y / s.height);
+        let (x, y) = (clamp(x), clamp(y));
+        WorldPoint::new(x * s.width, y * s.height) + self.pos
+    }
 }
 
 enum LinkTerminator {
+    Frame(Rc<RefCell<Frame>>),
     FrameParam(FrameParam),
     Point(WorldPoint),
 }
 
 impl LinkTerminator {
-    fn get_pos(&self)->WorldPoint {
+    fn get_pos_quick(&self)->WorldPoint {
         match self {
+            &LinkTerminator::Frame(ref frame) => frame.borrow().pos,
             &LinkTerminator::FrameParam(ref frame_param) => frame_param.center(),
             &LinkTerminator::Point(point) => point,
+        }
+    }
+    fn get_pos(&self, other: &LinkTerminator)->WorldPoint {
+        match self {
+            &LinkTerminator::Frame(ref frame) => frame.borrow().box_cast(&other.get_pos_quick()),
+            _ => self.get_pos_quick(),
         }
     }
 }
@@ -622,8 +643,8 @@ pub struct Link {
 impl Visible for Rc<RefCell<Link>> {
     fn draw(&self, c: &mut Canvas) {
         let link = self.borrow();
-        let start = link.a.get_pos();
-        let end = link.b.get_pos();
+        let start = link.a.get_pos(&link.b);
+        let end = link.b.get_pos(&link.a);
         let v = start - end;
         let length2 = v.dot(v);
         let length = length2.sqrt();
@@ -663,27 +684,6 @@ impl Visible for Rc<RefCell<Link>> {
     }
 }
 
-struct Machine {
-    blueprint: Weak<RefCell<Blueprint>>,
-    objects: Vec<Object>,
-}
-
-impl Machine {
-    fn new(blueprint: &Rc<RefCell<Blueprint>>, activate: bool) -> Rc<RefCell<Machine>> {
-        let m = Rc::new(RefCell::new(Machine {
-                                         blueprint: Rc::downgrade(blueprint),
-                                         objects: Vec::new(),
-                                     }));
-        // TODO: init all objects (from blueprint frames)
-        let mut blueprint = blueprint.borrow_mut();
-        if activate {
-            blueprint.active_machine = Rc::downgrade(&m);
-        };
-        blueprint.machines.push(m.clone());
-        return m;
-    }
-}
-
 struct Object {
     machine: Weak<RefCell<Machine>>,
     frame: Rc<RefCell<Frame>>,
@@ -692,10 +692,17 @@ struct Object {
     data: Box<Any>,
 }
 
+type TaskArg = Vec<Weak<RefCell<Frame>>>;
+type TaskArgs = Vec<TaskArg>;
 
-struct Arg(Weak<RefCell<Frame>>, Weak<RefCell<Machine>>);
-struct ArgPack(Vec<Arg>);
-struct Args(Vec<ArgPack>);
+struct Task {
+    machine: Weak<RefCell<Machine>>,
+    frame: Weak<RefCell<Frame>>,
+    args: TaskArgs,
+}
+
+type RunArg<'a> = Vec<&'a mut Object>;
+type RunArgs<'a> = Vec<RunArg<'a>>;
 
 struct Parameter {
     name: &'static str,
@@ -707,15 +714,15 @@ struct Type {
     name: &'static str,
     parameters: &'static [Parameter],
     init: &'static (Fn(&mut Object) + Sync),
-    run: &'static (Fn(&Args) + Sync),
+    run: &'static (Fn(&RunArgs) + Sync),
     draw: &'static (Fn(&Object, &mut Canvas) + Sync),
 }
 
 static text_type: Type = Type {
     name: "Text",
     parameters: &[],
-    init: &|o: &mut Object| { o.data = Box::new("Some string".to_string()); },
-    run: &|args: &Args| {},
+    init: &|o: &mut Object| { o.data = Box::new("/bin/ls".to_string()); },
+    run: &|args: &RunArgs| {},
     draw: &|o: &Object, canvas: &mut Canvas| {
         let font_metrics = canvas.get_font_metrics(6.);
 
@@ -734,9 +741,29 @@ static process_type: Type = Type {
             runnable: false,
             output: false,
         },
+        Parameter {
+            name: "Arguments",
+            runnable: false,
+            output: false,
+        },
+        Parameter {
+            name: "Input",
+            runnable: false,
+            output: false,
+        },
+        Parameter {
+            name: "Output",
+            runnable: false,
+            output: true,
+        },
     ],
     init: &|o: &mut Object| {},
-    run: &|args: &Args| {
+    run: &|args: &RunArgs| {
+        let mut object = &args[0][0];
+        if let Some(command) = object.data.downcast_ref::<String>() {
+            
+        }
+
         println!("Executing Process");
         let mut child = std::process::Command::new("/bin/ls")
             .arg("/home/mrogalski")
