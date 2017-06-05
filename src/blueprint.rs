@@ -9,7 +9,6 @@ use Object;
 use WorldPoint;
 
 pub struct Blueprint {
-    vm: Weak<RefCell<Vm>>,
     name: String,
     pub frames: Vec<Rc<RefCell<Frame>>>,
     pub links: Vec<Rc<RefCell<Link>>>,
@@ -18,10 +17,8 @@ pub struct Blueprint {
 }
 
 impl Blueprint {
-    pub fn new(vm_cell: &Rc<RefCell<Vm>>, name: String, activate: bool) -> Rc<RefCell<Blueprint>> {
-        let mut vm = vm_cell.borrow_mut();
+    pub fn new(vm: &mut Vm, name: String, activate: bool) -> Rc<RefCell<Blueprint>> {
         let b = Rc::new(RefCell::new(Blueprint {
-                                         vm: Rc::downgrade(vm_cell),
                                          name: name,
                                          frames: Vec::new(),
                                          links: Vec::new(),

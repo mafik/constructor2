@@ -22,8 +22,6 @@ impl TouchReceiver for DragLink {
     fn continue_touch(&self, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
         {
             let mut link = self.link.borrow_mut();
-            let delta = new_pos - self.pos;
-
             match self.side {
                 LinkSide::A => {
                     link.a = LinkTerminator::Point(new_pos);

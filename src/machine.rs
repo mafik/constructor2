@@ -8,7 +8,7 @@ use Frame;
 
 pub struct Machine {
     blueprint: Weak<RefCell<Blueprint>>,
-    objects: Vec<Object>,
+    objects: Vec<Rc<RefCell<Object>>>,
 }
 
 impl Machine {
@@ -27,23 +27,25 @@ impl Machine {
     }
     
     pub fn push(&mut self, object: Object) {
-        self.objects.push(object);
+        self.objects.push(Rc::new(RefCell::new(object)));
     }
 
-    pub fn get_object(&mut self, frame_rc: &Rc<RefCell<Frame>>) -> &mut Object {
+    pub fn get_object(&self, frame_rc: &Rc<RefCell<Frame>>) -> Rc<RefCell<Object>> {
         self
             .objects
-            .iter_mut()
-            .find(|o| Rc::ptr_eq(&o.frame, frame_rc))
+            .iter()
+            .find(|o| Rc::ptr_eq(&o.borrow().frame, frame_rc))
             .unwrap()
+            .clone()
     }
 
     pub fn with_object<F: FnMut(&mut Object)>(&mut self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
         let object = self
             .objects
             .iter_mut()
-            .find(|o| Rc::ptr_eq(&o.frame, frame_rc))
+            .find(|o| Rc::ptr_eq(&o.borrow().frame, frame_rc))
             .unwrap();
-        f(object);
+        use std::ops::DerefMut;
+        f(object.borrow_mut().deref_mut());
     }
 }

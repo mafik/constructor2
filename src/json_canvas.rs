@@ -3,7 +3,7 @@ extern crate rusttype;
 
 use std::rc::Rc;
 use canvas::Canvas;
-use rusttype::Font;
+use self::rusttype::Font;
 
 pub struct JsonCanvas<'a> {
     count: i32,
