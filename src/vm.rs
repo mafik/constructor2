@@ -1,10 +1,11 @@
 extern crate websocket;
 extern crate rusttype;
 extern crate serde_json;
+extern crate ref_eq;
 
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashSet, HashMap, VecDeque};
 use std::sync::mpsc;
 use std::net::TcpStream;
 use std::time::Instant;
@@ -13,17 +14,19 @@ use std::thread;
 use blueprint::*;
 use json_canvas::*;
 use canvas::*;
-use Task;
-use TaskArg;
+use text_type;
+use menu::*;
 use RunArgs;
 use event::*;
 use Display;
 use WorldPoint;
 use PixelPoint;
+use Object;
 use TouchReceiver;
 use LinkTerminator;
 use FrameParam;
 use Visible;
+use ObjectCell;
 use http;
 use touch::*;
 
@@ -47,7 +50,7 @@ pub struct Vm {
     pub blueprints: Vec<Rc<RefCell<Blueprint>>>,
     pub active_blueprint: Weak<RefCell<Blueprint>>,
 
-    tasks: VecDeque<Task>,
+    tasks: VecDeque<Weak<RefCell<Object>>>,
 
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
@@ -61,37 +64,20 @@ pub struct Vm {
     mouse: PixelPoint,
     last_update: Instant,
     mouse_handler: Option<Box<TouchReceiver>>,
+    menus: Vec<VisibleMenu>,
 }
 
 impl Vm {
-    fn query_task(&self) -> Option<Task> {
+    fn mouse_object(&self) -> Option<Weak<RefCell<Object>>> {
         let world_point = self.mouse_world();
         let blueprint_rc = self.active_blueprint.upgrade().unwrap();
         let blueprint = blueprint_rc.borrow();
         let frame_rc = blueprint.query_frame(world_point);
         if frame_rc.is_none() { return None; }
         let frame_rc = frame_rc.unwrap();
-        let mut task = Task {
-            machine: blueprint.active_machine.clone(),
-            frame: Rc::downgrade(&frame_rc),
-            args: vec![],
-        };
-        for param in frame_rc.borrow().typ.parameters {
-            task.args.push(vec![]);
-        }
-        for link_rc in blueprint.links.iter() {
-            let link = link_rc.borrow();
-            if let &LinkTerminator::FrameParam(FrameParam {
-                frame: ref frame_a,
-                param_index: param_index,
-            }) = &link.a {
-                if !Rc::ptr_eq(frame_a, &frame_rc) { continue; }
-                if let &LinkTerminator::Frame(ref frame_b) = &link.b {
-                    task.args[param_index].push(Rc::downgrade(frame_b));
-                }
-            }
-        }
-        return Some(task);
+        let machine_rc = blueprint.active_machine.upgrade().unwrap();
+        let machine = machine_rc.borrow();
+        return Some(Rc::downgrade(&machine.get_object(&frame_rc)));
     }
     fn mouse_world(&self) -> WorldPoint {
         self.display.to_world(self.mouse) - *self.center.borrow()
@@ -135,23 +121,13 @@ impl Vm {
             mouse: PixelPoint::new(0., 0.),
             last_update: Instant::now(),
             mouse_handler: None,
+            menus: Vec::new(),
         }
     }
 
     fn update_clients(&mut self) {
         let mut c = JsonCanvas::new(self.font.clone());
-        c.save();
-        c.font(format!("{}px Iosevka", 6.).as_str());
-
-        c.translate(self.display.size.x / 2., self.display.size.y / 2.);
-        c.scale(self.display.pixel_size().inv().get());
-        {
-            let center = self.center.borrow();
-            c.translate(center.x, center.y);
-        }
-
         self.draw(&mut c);
-        c.restore();
         let json = c.serialize();
         let message = websocket::Message::text(json);
         for (id, writer) in &mut self.websocket_clients {
@@ -173,8 +149,56 @@ impl Vm {
             });
         }
 
+        c.save();
+        c.font(format!("{}px Iosevka", 6.).as_str());
+        c.translate(self.display.size.x / 2., self.display.size.y / 2.);
+        c.scale(self.display.pixel_size().inv().get());
+        {
+            let center = self.center.borrow();
+            c.translate(center.x, center.y);
+        }
         draw(&blueprint.frames, c);
         draw(&blueprint.links, c);
+        c.restore();
+        c.save();
+        draw(&self.menus, c);
+        c.restore();
+    }
+
+    fn make_menu(&mut self, p: WorldPoint) -> Menu {
+        Menu {
+            entries: vec![
+                Entry {
+                    name: "Move view".to_string(),
+                    color: None,
+                    shortcuts: vec!["MMB".to_string()],
+                    action: Box::new(MovePointAction{
+                        point: Rc::downgrade(&self.center),
+                    }),
+                },
+            ],
+            color: "#888".to_string(),
+        }
+        /*
+        let mut frames;
+        {
+            let blueprint = self.active_blueprint.upgrade().unwrap();
+            let blueprint = blueprint.borrow();
+            frames = blueprint.frames.clone();
+        }
+        self.mouse_handler = match button {
+            0 => start_touch(&frames, &world_point),
+            1 => Some(Box::new(NavTouchReceiver{ nav: Rc::downgrade(&self.center), last_pos: world_point })),
+            2 => open_menu(world_point),
+            _ => None
+        }
+         */
+    }
+
+    fn open_menu(&mut self, menu: Menu, point: WorldPoint) -> Option<Box<TouchReceiver>> {
+        
+        self.menus.push();
+        None
     }
 
     fn process_event(&mut self, event: Event) {
@@ -260,25 +284,18 @@ impl Vm {
                      *
                      * Activating an action moves the interaction to the world space.
                      */
+                    
                     if self.mouse_handler.is_some() {
                         return;
                     }
-                    let mut frames;
-                    {
-                        let blueprint = self.active_blueprint.upgrade().unwrap();
-                        let blueprint = blueprint.borrow();
-                        frames = blueprint.frames.clone();
-                    }
                     let pixel_point = PixelPoint::new(x, y);
                     let world_point = self.mouse_world();
+                    let menu = self.make_menu(world_point.clone());
                     self.mouse_handler = match button {
-                        0 => start_touch(&frames, &world_point),
-                        1 => Some(Box::new(NavTouchReceiver{ nav: Rc::downgrade(&self.center), last_pos: world_point })),
-                        2 => {
-                            //blueprint.start_touch_menu(x, y)
-                            None
-                        }
-                        _ => None
+                        0 => menu.activate_shortcut("LMB".to_string(), world_point),
+                        1 => menu.activate_shortcut("MMB".to_string(), world_point),
+                        2 => self.open_menu(menu, world_point),
+                        _ => None,
                     }
                 }
                 Event::MouseUp {
@@ -305,9 +322,31 @@ impl Vm {
                 }
                 Event::KeyDown { code: code, key: key } => {
                     println!("Pressed key {}, code {}", key, code);
-                    if code == "Enter" {
-                        if let Some(task) = self.query_task() {
-                            self.tasks.push_back(task);
+                    if let Some(weak) = self.mouse_object() {
+                        let rc = weak.upgrade().unwrap();
+                        let mut update = false;
+                        {
+                            let mut object = rc.borrow_mut();
+                            if ref_eq::ref_eq(object.frame.borrow().typ, &text_type) {
+                                if key.len() == 1 {
+                                    let mut contents = object.data
+                                        .downcast_mut::<String>().unwrap();
+                                    contents.push_str(key.as_ref());
+                                    update = true;
+                                } else if key == "Backspace" {
+                                    let mut contents = object.data
+                                        .downcast_mut::<String>().unwrap();
+                                    contents.pop();
+                                    update = true;
+                                }
+                            } else {
+                                if code == "Enter" {
+                                    self.tasks.push_back(weak);
+                                }
+                            }
+                        }
+                        if update {
+                            self.update_clients();
                         }
                     }
                 }
@@ -347,23 +386,38 @@ impl Vm {
             }
     }
 
-    fn process_task(&mut self, task: Task) {
-        if let Some(machine_rc) = task.machine.upgrade() {
-            let mut machine = machine_rc.borrow_mut();
-            if let Some(frame_rc) = task.frame.upgrade() {
-                let mut run_args: RunArgs = vec![];
-                for task_arg in task.args.into_iter() {
-                    let mut run_arg = vec![];
-                    for weak_frame in task_arg.into_iter() {
-                        let frame_rc = weak_frame.upgrade().unwrap();
-                        let mut object = machine.get_object(&frame_rc);
-                        run_arg.push(object);
-                    }
-                    run_args.push(run_arg);
+    fn collect_args(&self, object: &ObjectCell) -> RunArgs {
+        let object = object.borrow();
+        let machine_rc = object.machine.upgrade().unwrap();
+        let machine = machine_rc.borrow_mut();
+        let frame = object.frame.borrow();
+        let mut args = vec![];
+        for param in frame.typ.parameters {
+            args.push(vec![]);
+        }
+        let blueprint_rc = frame.blueprint.upgrade().unwrap();
+        let blueprint = blueprint_rc.borrow();
+        for link_rc in blueprint.links.iter() {
+            let link = link_rc.borrow();
+            if let &LinkTerminator::FrameParam(FrameParam {
+                frame: ref frame_a,
+                param_index: param_index,
+            }) = &link.a {
+                if !Rc::ptr_eq(frame_a, &object.frame) { continue; }
+                if let &LinkTerminator::Frame(ref frame_b) = &link.b {
+                    args[param_index].push(machine.get_object(frame_b));
                 }
-                let typ = frame_rc.borrow().typ;
-                (typ.run)(run_args);
             }
+        }
+        return args;
+    }
+
+    fn process_task(&mut self, object: Weak<RefCell<Object>>) {
+        if let Some(object_rc) = object.upgrade() {
+            let args = self.collect_args(&object_rc);
+            let object = object_rc.borrow();
+            let typ = object.frame.borrow().typ;
+            (typ.run)(args);
         }
     }
 

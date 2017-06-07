@@ -1,14 +1,11 @@
 /*
 TODOs:
-- move per-client parameters to separate struct
-
-Milestones:
-1. Object that runs a command on click (DONE)
-2. Command is fetched from another object
-3. Command is fetched from several other objects
-4. String objects are editable
+- Plan support for radial menus (DONE)
+- Implement structures for Radial Menus
 
 On hold:
+- Error reporting
+- Move per-client parameters to separate struct
 - Serve Iosevka from hyper
 - Support concurrent access from many clients (different dpi and viewports)
 */
@@ -24,6 +21,7 @@ mod machine;
 mod blueprint;
 mod vm;
 mod event;
+mod menu;
 
 use std::time::Instant;
 use std::thread;
@@ -74,8 +72,8 @@ impl Display {
 }
 
 trait TouchReceiver {
-    fn continue_touch(&self, p: WorldPoint) -> Option<Box<TouchReceiver>>;
-    fn end_touch(&self);
+    fn continue_touch(self: Box<Self>, p: WorldPoint) -> Option<Box<TouchReceiver>>;
+    fn end_touch(self: Box<Self>);
 }
 
 trait Visible {
@@ -373,12 +371,13 @@ struct Type {
     init: &'static (Fn(&mut Object) + Sync),
     run: &'static (Fn(RunArgs) + Sync),
     draw: &'static (Fn(&Object, &mut Canvas) + Sync),
+    menu: &'static (Fn(ObjectCell, WorldPoint) -> menu::Menu + Sync),
 }
 
 static text_type: Type = Type {
     name: "Text",
     parameters: &[],
-    init: &|o: &mut Object| { o.data = Box::new("/bin/ls".to_string()); },
+    init: &|o: &mut Object| { o.data = Box::new("".to_string()); },
     run: &|args: RunArgs| {},
     draw: &|o: &Object, canvas: &mut Canvas| {
         let font_metrics = canvas.get_font_metrics(6.);
@@ -388,6 +387,7 @@ static text_type: Type = Type {
                         2.,
                         2. + font_metrics.ascent as f64);
     },
+    menu: &|object_rc, p| menu::Menu { entries: Vec::new(), color: "#888".to_string() },
 };
 
 static process_type: Type = Type {
@@ -418,10 +418,18 @@ static process_type: Type = Type {
     run: &|args: RunArgs| {
         if let Some(command_rc) = args[0].get(0) {
             let command = command_rc.borrow();
-            if let Some(command) = command.data.downcast_ref::<String>() {            
+            if let Some(command) = command.data.downcast_ref::<String>() {
+                let mut command_builder = std::process::Command::new(command);
                 println!("Executing {}", command);
-                let mut child = std::process::Command::new(command)
-                    .arg("/home/mrogalski")
+                for arg_rc in args[1].iter() {
+                    let arg = arg_rc.borrow();
+                    if let Some(arg) = arg.data.downcast_ref::<String>() {
+                        command_builder.arg(arg);
+                    } else {
+                        println!("Argument is not a string!");
+                    }
+                }
+                let mut child = command_builder
                     .stdout(std::process::Stdio::piped())
                     .spawn()
                     .expect("failed to execute ls");
@@ -435,19 +443,29 @@ static process_type: Type = Type {
         }
     },
     draw: &|o: &Object, canvas: &mut Canvas| {},
+    menu: &|object_rc, p| menu::Menu { entries: Vec::new(), color: "#888".to_string() },
 };
+
+fn new_text(blueprint_rc: &Rc<RefCell<Blueprint>>, text: &str, x: f64, y: f64, width: f64, height: f64) {
+    
+    let frame_rc = Frame::new(&text_type, &blueprint_rc, true);
+    let mut frame = frame_rc.borrow_mut();
+    frame.pos = WorldPoint::new(x, y);
+    frame.size = WorldSize::new(width, height);
+    let blueprint = blueprint_rc.borrow();
+    let machine_rc = blueprint.active_machine.upgrade().unwrap();
+    let object_rc = machine_rc.borrow().get_object(&frame_rc);
+    object_rc.borrow_mut().data = Box::new(text.to_string());
+}
 
 fn main() {
     let mut vm = Vm::new();
     let blueprint = Blueprint::new(&mut vm, "Default".to_string(), true);
     Machine::new(&blueprint, true);
-    let text_frame = Frame::new(&text_type, &blueprint, true);
-    {
-        let mut frame = text_frame.borrow_mut();
-        frame.size.width = 50.;
-        frame.pos.y = -20.;
-    }
-    let process_frame = Frame::new(&process_type, &blueprint, true);
+    new_text(&blueprint, "/bin/ls", -20., -20., 50., 10.);
+    new_text(&blueprint, "/home/mrogalski", -20., 20., 50., 10.);
 
+    let process_frame = Frame::new(&process_type, &blueprint, true);
+    
     vm.run();
 }

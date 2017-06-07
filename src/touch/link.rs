@@ -19,7 +19,7 @@ pub struct DragLink {
 }
 
 impl TouchReceiver for DragLink {
-    fn continue_touch(&self, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
+    fn continue_touch(mut self: Box<Self>, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
         {
             let mut link = self.link.borrow_mut();
             match self.side {
@@ -31,13 +31,10 @@ impl TouchReceiver for DragLink {
                 }
             }
         }
-        Some(Box::new(DragLink {
-                          side: self.side,
-                          link: self.link.clone(),
-                          pos: new_pos,
-                      }))
+        self.pos = new_pos;
+        Some(self)
     }
-    fn end_touch(&self) {
+    fn end_touch(self: Box<Self>) {
         let mut link = self.link.borrow_mut();
         let blueprint_rc = link.blueprint.upgrade().unwrap();
         let mut blueprint = blueprint_rc.borrow_mut();

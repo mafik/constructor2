@@ -20,7 +20,7 @@ pub struct DragFrame {
 }
 
 impl TouchReceiver for DragFrame {
-    fn continue_touch(&self, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
+    fn continue_touch(mut self: Box<Self>, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
         {
             let mut frame = self.frame.borrow_mut();
             let delta = new_pos - self.pos;
@@ -47,12 +47,8 @@ impl TouchReceiver for DragFrame {
             frame.pos = pos;
             frame.size = size;
         }
-        Some(Box::new(DragFrame {
-                          vertical: self.vertical,
-                          horizontal: self.horizontal,
-                          frame: self.frame.clone(),
-                          pos: new_pos,
-                      }))
+        self.pos = new_pos;
+        return Some(self);
     }
-    fn end_touch(&self) {}
+    fn end_touch(self: Box<Self>) {}
 }
