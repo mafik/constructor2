@@ -8,7 +8,14 @@ pub trait Canvas {
     fn fillText(&mut self, text: &str, x: f64, y: f64) -> &mut Canvas;
     fn fillRect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas;
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas;
-    fn arc(&mut self, x: f64, y: f64, r: f64, alpha: f64, beta: f64) -> &mut Canvas;
+    fn arc(&mut self,
+           x: f64,
+           y: f64,
+           r: f64,
+           alpha: f64,
+           beta: f64,
+           clockwise: bool)
+           -> &mut Canvas;
     fn ellipse(&mut self,
                x: f64,
                y: f64,
@@ -41,7 +48,7 @@ pub trait Canvas {
     fn get_font_metrics(&self, scale: f64) -> rusttype::VMetrics;
     fn fillCircle(&mut self, x: f64, y: f64, r: f64) -> &mut Canvas {
         self.beginPath()
-            .arc(x, y, r, 0.0, std::f64::consts::PI * 2.)
+            .arc(x, y, r, 0.0, std::f64::consts::PI * 2., true)
             .fill()
     }
 }

@@ -61,13 +61,14 @@ impl<'a> Canvas for JsonCanvas<'a> {
                             w,
                             h))
     }
-    fn arc(&mut self, x: f64, y: f64, r: f64, alpha: f64, beta: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"arc","x":{},"y":{},"r":{},"alpha":{},"beta":{}}}"#,
+    fn arc(&mut self, x: f64, y: f64, r: f64, alpha: f64, beta: f64, clockwise: bool) -> &mut Canvas {
+        self.append(format!(r#"{{"type":"arc","x":{},"y":{},"r":{},"alpha":{},"beta":{},"clockwise":{}}}"#,
                             x,
                             y,
                             r,
                             alpha,
-                            beta))
+                            beta,
+                            clockwise))
     }
     fn ellipse(&mut self, x: f64, y: f64, rx: f64, ry: f64, rotation: f64, alpha: f64, beta: f64, anticlockwise: bool) -> &mut Canvas {
         self.append(format!(r#"{{"type":"ellipse","x":{},"y":{},"rx":{},"ry":{},"rotation":{},"alpha":{},"beta":{},"anticlockwise":{}}}"#,

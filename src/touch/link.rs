@@ -3,6 +3,7 @@ use std::cell::RefCell;
 
 use Link;
 use WorldPoint;
+use DisplayPoint;
 use TouchReceiver;
 use LinkTerminator;
 
@@ -19,7 +20,10 @@ pub struct DragLink {
 }
 
 impl TouchReceiver for DragLink {
-    fn continue_touch(mut self: Box<Self>, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
+    fn continue_touch(mut self: Box<Self>,
+                      display: DisplayPoint,
+                      new_pos: WorldPoint)
+                      -> Option<Box<TouchReceiver>> {
         {
             let mut link = self.link.borrow_mut();
             match self.side {
@@ -42,18 +46,18 @@ impl TouchReceiver for DragLink {
         match frame {
             Some(frame) => {
                 match self.side {
-                    LinkSide::A => {
-                        link.a = LinkTerminator::Frame(frame)
-                    }
-                    LinkSide::B => {
-                        link.b = LinkTerminator::Frame(frame)
-                    }
+                    LinkSide::A => link.a = LinkTerminator::Frame(frame),
+                    LinkSide::B => link.b = LinkTerminator::Frame(frame),
                 }
-            },
+            }
             None => {
-                let i = blueprint.links.iter().enumerate()
+                let i = blueprint
+                    .links
+                    .iter()
+                    .enumerate()
                     .find(|tup| Rc::ptr_eq(&self.link, &tup.1))
-                    .unwrap().0;
+                    .unwrap()
+                    .0;
                 blueprint.links.swap_remove(i);
             }
         }

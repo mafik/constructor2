@@ -3,6 +3,7 @@ use std::cell::RefCell;
 
 use Frame;
 use WorldPoint;
+use DisplayPoint;
 use TouchReceiver;
 
 #[derive(Clone, Copy)]
@@ -20,7 +21,10 @@ pub struct DragFrame {
 }
 
 impl TouchReceiver for DragFrame {
-    fn continue_touch(mut self: Box<Self>, new_pos: WorldPoint) -> Option<Box<TouchReceiver>> {
+    fn continue_touch(mut self: Box<Self>,
+                      display: DisplayPoint,
+                      new_pos: WorldPoint)
+                      -> Option<Box<TouchReceiver>> {
         {
             let mut frame = self.frame.borrow_mut();
             let delta = new_pos - self.pos;

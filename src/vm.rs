@@ -20,6 +20,7 @@ use RunArgs;
 use event::*;
 use Display;
 use WorldPoint;
+use DisplayPoint;
 use PixelPoint;
 use Object;
 use TouchReceiver;
@@ -27,13 +28,16 @@ use LinkTerminator;
 use FrameParam;
 use Visible;
 use ObjectCell;
+use euclid::ScaleFactor;
+use DisplayMillimetreSpace;
+use WorldMillimetreSpace;
 use http;
 use touch::*;
 
 static FONT: &'static [u8] = include_bytes!("html/fonts/iosevka-regular.ttf");
 
-fn start_touch<V: Visible>(v: &Vec<V>, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
-    walk_visible(v, |elem| { elem.start_touch(p) })
+fn start_touch<V: Visible>(v: &Vec<V>, d: &DisplayPoint, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+    walk_visible(v, |elem| { elem.start_touch(d, p) })
 }
 
 fn walk_visible<V: Visible, T, F: FnMut(&Visible)->Option<T>>(v: &Vec<V>, mut f: F) -> Option<T> {
@@ -64,7 +68,8 @@ pub struct Vm {
     mouse: PixelPoint,
     last_update: Instant,
     mouse_handler: Option<Box<TouchReceiver>>,
-    menus: Vec<VisibleMenu>,
+    menus: Vec<Weak<VisibleMenu>>,
+    zoom: ScaleFactor<f64, DisplayMillimetreSpace, WorldMillimetreSpace>,
 }
 
 impl Vm {
@@ -79,8 +84,11 @@ impl Vm {
         let machine = machine_rc.borrow();
         return Some(Rc::downgrade(&machine.get_object(&frame_rc)));
     }
+    fn mouse_display(&self) -> DisplayPoint {
+        self.display.to_millimetre(self.mouse)
+    }
     fn mouse_world(&self) -> WorldPoint {
-        self.display.to_world(self.mouse) - *self.center.borrow()
+        self.display.to_millimetre(self.mouse) * self.zoom - *self.center.borrow()
     }
     pub fn new() -> Vm {
         let font_collection = rusttype::FontCollection::from_bytes(FONT);
@@ -122,6 +130,7 @@ impl Vm {
             last_update: Instant::now(),
             mouse_handler: None,
             menus: Vec::new(),
+            zoom: ScaleFactor::new(1.0),
         }
     }
 
@@ -136,7 +145,7 @@ impl Vm {
         self.last_update = Instant::now();
     }
 
-    fn draw(&self, c: &mut Canvas) {
+    fn draw(&mut self, c: &mut Canvas) {
         let blueprint_rc = self.active_blueprint.upgrade().unwrap();
         let blueprint = blueprint_rc.borrow();
 
@@ -148,11 +157,14 @@ impl Vm {
                 None
             });
         }
-
+        
         c.save();
         c.font(format!("{}px Iosevka", 6.).as_str());
         c.translate(self.display.size.x / 2., self.display.size.y / 2.);
         c.scale(self.display.pixel_size().inv().get());
+
+        c.save();
+        c.scale(self.zoom.inv().get());
         {
             let center = self.center.borrow();
             c.translate(center.x, center.y);
@@ -160,8 +172,10 @@ impl Vm {
         draw(&blueprint.frames, c);
         draw(&blueprint.links, c);
         c.restore();
-        c.save();
-        draw(&self.menus, c);
+
+        let menus_rc = self.menus.iter().filter_map(|x| x.upgrade()).collect();
+        draw(&menus_rc, c);
+        self.menus = menus_rc.iter().map(Rc::downgrade).collect();
         c.restore();
     }
 
@@ -172,9 +186,7 @@ impl Vm {
                     name: "Move view".to_string(),
                     color: None,
                     shortcuts: vec!["MMB".to_string()],
-                    action: Box::new(MovePointAction{
-                        point: Rc::downgrade(&self.center),
-                    }),
+                    action: Box::new(MovePointAction::new(Rc::downgrade(&self.center), true)),
                 },
             ],
             color: "#888".to_string(),
@@ -195,10 +207,10 @@ impl Vm {
          */
     }
 
-    fn open_menu(&mut self, menu: Menu, point: WorldPoint) -> Option<Box<TouchReceiver>> {
-        
-        self.menus.push();
-        None
+    fn open_menu(&mut self, menu: Menu, point: DisplayPoint) -> Option<Box<TouchReceiver>> {
+        let visible_menu_rc = VisibleMenu::new(menu, point);
+        self.menus.push(Rc::downgrade(&visible_menu_rc));
+        Some(Box::new(visible_menu_rc))
     }
 
     fn process_event(&mut self, event: Event) {
@@ -288,15 +300,16 @@ impl Vm {
                     if self.mouse_handler.is_some() {
                         return;
                     }
-                    let pixel_point = PixelPoint::new(x, y);
+                    let display_point = self.mouse_display();
                     let world_point = self.mouse_world();
                     let menu = self.make_menu(world_point.clone());
                     self.mouse_handler = match button {
-                        0 => menu.activate_shortcut("LMB".to_string(), world_point),
-                        1 => menu.activate_shortcut("MMB".to_string(), world_point),
-                        2 => self.open_menu(menu, world_point),
+                        0 => menu.activate_shortcut("LMB".to_string(), display_point, world_point),
+                        1 => menu.activate_shortcut("MMB".to_string(), display_point, world_point),
+                        2 => self.open_menu(menu, display_point),
                         _ => None,
-                    }
+                    };
+                    self.update_clients();
                 }
                 Event::MouseUp {
                     x: x,
@@ -311,9 +324,11 @@ impl Vm {
                 }
                 Event::MouseMove { x: x, y: y } => {
                     self.mouse = PixelPoint::new(x, y);
+                    let display = self.mouse_display();
+                    let world = self.mouse_world();
 
                     let taken = self.mouse_handler.take();
-                    let taken = taken.and_then(|b| b.continue_touch(self.mouse_world()));
+                    let taken = taken.and_then(|b| b.continue_touch(display, world));
                     self.mouse_handler = taken;
                     
                     if self.mouse_handler.is_some() {
@@ -375,7 +390,7 @@ impl Vm {
                 Event::MouseWheel { x: x, y: y } => {
                     {
                         let start = self.mouse_world();
-                        self.display.eye_distance_meters *= (y/-200.).exp();
+                        self.zoom = ScaleFactor::new(self.zoom.get() * (y/200.).exp());
                         let end = self.mouse_world();
                         let mut center = self.center.borrow_mut();
                         *center = *center - start + end;
