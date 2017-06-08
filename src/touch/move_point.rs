@@ -5,6 +5,7 @@ use menu::Action;
 use WorldPoint;
 use DisplayPoint;
 use TouchReceiver;
+use vm::Vm;
 use std;
 
 pub struct MovePointAction {
@@ -23,6 +24,7 @@ impl MovePointAction {
 
 impl Action for MovePointAction {
     fn start(self: Box<Self>,
+             vm: &mut Vm,
              display: DisplayPoint,
              world: WorldPoint)
              -> Option<Box<TouchReceiver>> {
@@ -53,6 +55,7 @@ pub struct MovePointTouchReceiver {
 
 impl TouchReceiver for MovePointTouchReceiver {
     fn continue_touch(mut self: Box<Self>,
+                      vm: &mut Vm,
                       display: DisplayPoint,
                       world: WorldPoint)
                       -> Option<Box<TouchReceiver>> {
@@ -74,5 +77,5 @@ impl TouchReceiver for MovePointTouchReceiver {
             _ => None,
         }
     }
-    fn end_touch(self: Box<Self>) {}
+    fn end_touch(self: Box<Self>, _: &mut Vm) {}
 }

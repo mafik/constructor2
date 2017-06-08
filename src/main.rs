@@ -1,10 +1,22 @@
 /*
 TODOs:
-- Plan support for radial menus (DONE)
-- Implement structures for Radial Menus
+- Draw right number of menu items (DONE)
+- Draw text next to menu items (DONE)
+- Include shortcuts (DONE)
+- Choose pretty color for main menu (DONE)
+- Add option for moving a frame (DONE)
+- Add option for linking a parameter (DONE)
+- Add option for deleting a frame (DONE)
+- Add option for activating frames (DONE)
+- Ensure that a frame can be safely deleted (consume the Rc)
+- Activate the right option (instead of the first one)
+- Add options for creating new frames (text, process)
+- Draw background below menu entry name
+- Multiple mouse handlers at the same time
 
 On hold:
-- Error reporting
+- Performance monitoring
+- Interactive error reporting
 - Move per-client parameters to separate struct
 - Serve Iosevka from hyper
 - Support concurrent access from many clients (different dpi and viewports)
@@ -40,6 +52,7 @@ use touch::*;
 use machine::*;
 use blueprint::*;
 use vm::*;
+use menu::*;
 
 pub struct DisplayMillimetreSpace; // milimeters @ half meter
 pub struct WorldMillimetreSpace; // above * viewport zoom + viewport offset
@@ -78,18 +91,17 @@ impl Display {
 
 trait TouchReceiver {
     fn continue_touch(self: Box<Self>,
+                      vm: &mut Vm,
                       display: DisplayPoint,
                       world: WorldPoint)
                       -> Option<Box<TouchReceiver>>;
-    fn end_touch(self: Box<Self>);
+    fn end_touch(self: Box<Self>, &mut Vm);
 }
 
+// TODO: rename to VisibleLayer
 trait Visible {
     fn draw(&self, c: &mut Canvas);
-    fn start_touch(&self,
-                   display: &DisplayPoint,
-                   world: &WorldPoint)
-                   -> Option<Box<TouchReceiver>>;
+    fn make_menu(&self, d: DisplayPoint, w: WorldPoint) -> Option<Menu>;
 }
 
 #[derive(Clone)]
@@ -119,29 +131,58 @@ impl Visible for FrameParam {
                    center.x + PARAM_RADIUS + PARAM_SPACING,
                    center.y);
     }
-    fn start_touch(&self, d: &DisplayPoint, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+    fn make_menu(&self, d: DisplayPoint, w: WorldPoint) -> Option<Menu> {
         let center = self.center();
-        let q = *p - center;
+        let q = w - center;
         let dist = q.dot(q).sqrt();
         if dist < PARAM_RADIUS {
-            let frame = self.frame.borrow();
-            let blueprint_rc = frame.blueprint.upgrade().unwrap();
-            let mut blueprint = blueprint_rc.borrow_mut();
-            let link_rc = Rc::new(RefCell::new(Link {
-                                                   blueprint: frame.blueprint.clone(),
-                                                   a: LinkTerminator::FrameParam(self.clone()),
-                                                   b: LinkTerminator::Point(*p),
-                                                   order: 0,
-                                               }));
-            blueprint.links.push(link_rc.clone());
-            Some(Box::new(DragLink {
-                              side: LinkSide::B,
-                              link: link_rc,
-                              pos: *p,
-                          }))
+            Some(Menu {
+                     entries: vec![Entry {
+                                       name: "Connect".to_string(),
+                                       color: None,
+                                       shortcuts: vec!["LMB".to_string()],
+                                       action: Box::new(ConnectParamAction::new(self)),
+                                   }],
+                     color: "#888".to_string(),
+                 })
         } else {
             None
         }
+    }
+}
+
+struct ConnectParamAction {
+    frame_param: FrameParam,
+}
+
+impl ConnectParamAction {
+    fn new(frame_param: &FrameParam) -> ConnectParamAction {
+        ConnectParamAction { frame_param: frame_param.clone() }
+    }
+}
+
+impl Action for ConnectParamAction {
+    fn start(self: Box<Self>,
+             _: &mut Vm,
+             d: DisplayPoint,
+             w: WorldPoint)
+             -> Option<Box<TouchReceiver>> {
+        let frame_param = (*self).frame_param;
+        let blueprint_weak = frame_param.frame.borrow().blueprint.clone();
+        let blueprint_rc = blueprint_weak.upgrade().unwrap();
+        let mut blueprint = blueprint_rc.borrow_mut();
+        let link_rc = Rc::new(RefCell::new(Link {
+                                               blueprint: blueprint_weak,
+                                               a: LinkTerminator::FrameParam(frame_param),
+                                               b: LinkTerminator::Point(w),
+                                               order: 0,
+                                           }));
+        blueprint.links.push(link_rc.clone());
+        Some(Box::new(DragLink {
+                          side: LinkSide::B,
+                          link: link_rc,
+                          pos: w,
+                      }))
     }
 }
 
@@ -181,14 +222,13 @@ impl Visible for Rc<RefCell<Frame>> {
         let blueprint = blueprint_rc.borrow();
         blueprint.with_object(self, |o| { (frame.typ.draw)(o, c); });
     }
-    fn start_touch(&self, d: &DisplayPoint, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
-        // TODO: move this to touch::drag
+    fn make_menu(&self, d: DisplayPoint, w: WorldPoint) -> Option<Menu> {
         let mut q;
         let mut s;
         let mut param_count;
         {
             let frame = self.borrow();
-            q = *p - frame.pos;
+            q = w - frame.pos;
             s = frame.size * 0.5;
             param_count = frame.typ.parameters.len();
         }
@@ -208,25 +248,156 @@ impl Visible for Rc<RefCell<Frame>> {
                     DragMode::Drag
                 }
             }
-            Some(Box::new(DragFrame {
-                              horizontal: choose_drag_mode(q.x, s2.width),
-                              vertical: choose_drag_mode(q.y, s2.height),
-                              frame: self.clone(),
-                              pos: p.clone(),
-                          }))
+            let horizontal = choose_drag_mode(q.x, s2.width);
+            let vertical = choose_drag_mode(q.y, s2.height);
+            let name = if horizontal == DragMode::Drag && vertical == DragMode::Drag {
+                    "Move"
+                } else {
+                    "Resize"
+                }
+                .to_string();
+            Some(Menu {
+                     entries: vec![Entry {
+                                       name: name,
+                                       color: None,
+                                       shortcuts: vec!["LMB".to_string()],
+                                       action: Box::new(DragFrameAction::new(self,
+                                                                             horizontal,
+                                                                             vertical)),
+                                   },
+                                   Entry {
+                                       name: "Run".to_string(),
+                                       color: None,
+                                       shortcuts: vec!["Space".to_string()],
+                                       action: Box::new(RunAction::new(self)),
+                                   },
+                                   Entry {
+                                       name: "Delete".to_string(),
+                                       color: None,
+                                       shortcuts: vec!["Delete".to_string()],
+                                       action: Box::new(DeleteFrameAction::new(self)),
+                                   }],
+                     color: "#888".to_string(),
+                 })
         } else {
             for param_index in 0..param_count {
                 let frame_param = FrameParam {
                     frame: self.clone(),
                     param_index: param_index,
                 };
-                let touch_receiver = frame_param.start_touch(d, p);
-                if touch_receiver.is_some() {
-                    return touch_receiver;
+                let menu = frame_param.make_menu(d, w);
+                if menu.is_some() {
+                    return menu;
                 }
             }
             None
+
         }
+    }
+}
+
+struct RunAction {
+    frame: Weak<RefCell<Frame>>,
+}
+
+impl RunAction {
+    fn new(frame: &Rc<RefCell<Frame>>) -> RunAction {
+        RunAction { frame: Rc::downgrade(frame) }
+    }
+}
+
+impl Action for RunAction {
+    fn start(self: Box<Self>,
+             vm: &mut Vm,
+             d: DisplayPoint,
+             w: WorldPoint)
+             -> Option<Box<TouchReceiver>> {
+        println!("Running frame!");
+        let frame = (*self).frame.upgrade();
+        if frame.is_none() {
+            return None;
+        }
+        let frame = frame.unwrap();
+        let blueprint = frame.borrow().blueprint.upgrade();
+        if blueprint.is_none() {
+            return None;
+        }
+        let blueprint = blueprint.unwrap();
+        let machine = blueprint.borrow().active_machine.upgrade().unwrap();
+        let object = Rc::downgrade(&machine.borrow().get_object(&frame));
+        vm.tasks.push_back(object);
+        None
+    }
+}
+
+struct DeleteFrameAction {
+    frame: Weak<RefCell<Frame>>,
+}
+
+impl DeleteFrameAction {
+    fn new(frame: &Rc<RefCell<Frame>>) -> DeleteFrameAction {
+        DeleteFrameAction { frame: Rc::downgrade(frame) }
+    }
+}
+
+impl Action for DeleteFrameAction {
+    fn start(self: Box<Self>,
+             _: &mut Vm,
+             d: DisplayPoint,
+             w: WorldPoint)
+             -> Option<Box<TouchReceiver>> {
+        println!("Deleting frame!");
+        let frame = (*self).frame.upgrade();
+        if frame.is_none() {
+            return None;
+        }
+        let frame = frame.unwrap();
+        let blueprint = frame.borrow().blueprint.upgrade();
+        if let Some(blueprint) = blueprint {
+            let mut blueprint = blueprint.borrow_mut();
+            if let Some((index, _)) = blueprint
+                   .frames
+                   .iter()
+                   .enumerate()
+                   .find(|x| Rc::ptr_eq(x.1, &frame)) {
+                blueprint.frames.swap_remove(index);
+            }
+        }
+        None
+    }
+}
+
+struct DragFrameAction {
+    frame: Weak<RefCell<Frame>>,
+    horizontal: DragMode,
+    vertical: DragMode,
+}
+
+impl DragFrameAction {
+    fn new(frame_rc: &Rc<RefCell<Frame>>,
+           horizontal: DragMode,
+           vertical: DragMode)
+           -> DragFrameAction {
+        DragFrameAction {
+            frame: Rc::downgrade(frame_rc),
+            horizontal: horizontal,
+            vertical: vertical,
+        }
+    }
+}
+
+impl Action for DragFrameAction {
+    fn start(self: Box<Self>,
+             _: &mut Vm,
+             d: DisplayPoint,
+             w: WorldPoint)
+             -> Option<Box<TouchReceiver>> {
+        Some(Box::new(DragFrame {
+                          horizontal: self.horizontal,
+                          vertical: self.vertical,
+                          frame: (*self).frame,
+                          pos: w,
+                      }))
     }
 }
 
@@ -370,7 +541,7 @@ impl Visible for Rc<RefCell<Link>> {
 
         c.restore();
     }
-    fn start_touch(&self, d: &DisplayPoint, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
+    fn make_menu(&self, d: DisplayPoint, w: WorldPoint) -> Option<Menu> {
         None
     }
 }
@@ -505,6 +676,7 @@ fn main() {
     new_text(&blueprint, "/home/mrogalski", -20., 20., 50., 10.);
 
     let process_frame = Frame::new(&process_type, &blueprint, true);
+    process_frame.borrow_mut().pos.x += 20.;
 
     vm.run();
 }

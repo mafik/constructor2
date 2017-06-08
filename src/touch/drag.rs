@@ -1,12 +1,13 @@
-use std::rc::Rc;
+use std::rc::{Weak, Rc};
 use std::cell::RefCell;
 
 use Frame;
 use WorldPoint;
 use DisplayPoint;
 use TouchReceiver;
+use vm::Vm;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum DragMode {
     StretchLow,
     StretchHigh,
@@ -16,17 +17,23 @@ pub enum DragMode {
 pub struct DragFrame {
     pub vertical: DragMode,
     pub horizontal: DragMode,
-    pub frame: Rc<RefCell<Frame>>,
+    pub frame: Weak<RefCell<Frame>>,
     pub pos: WorldPoint,
 }
 
 impl TouchReceiver for DragFrame {
     fn continue_touch(mut self: Box<Self>,
+                      vm: &mut Vm,
                       display: DisplayPoint,
                       new_pos: WorldPoint)
                       -> Option<Box<TouchReceiver>> {
         {
-            let mut frame = self.frame.borrow_mut();
+            let frame = self.frame.upgrade();
+            if frame.is_none() {
+                return None;
+            }
+            let frame = frame.unwrap();
+            let mut frame = frame.borrow_mut();
             let delta = new_pos - self.pos;
 
             fn drag(mode: DragMode, pos_val: &mut f64, size_val: &mut f64, delta: f64) {
@@ -54,5 +61,5 @@ impl TouchReceiver for DragFrame {
         self.pos = new_pos;
         return Some(self);
     }
-    fn end_touch(self: Box<Self>) {}
+    fn end_touch(self: Box<Self>, _: &mut Vm) {}
 }

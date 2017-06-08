@@ -1,6 +1,7 @@
 use canvas::Canvas;
 use std::rc::{Rc, Weak};
 use std::cell::Cell;
+use vm::Vm;
 use TouchReceiver;
 use Visible;
 use WorldPoint;
@@ -8,7 +9,7 @@ use DisplayPoint;
 use PARAM_RADIUS;
 
 pub trait Action {
-    fn start(self: Box<Self>, DisplayPoint, WorldPoint) -> Option<Box<TouchReceiver>>;
+    fn start(self: Box<Self>, &mut Vm, DisplayPoint, WorldPoint) -> Option<Box<TouchReceiver>>;
 }
 
 pub struct Entry {
@@ -25,6 +26,7 @@ pub struct Menu {
 
 impl Menu {
     pub fn activate_shortcut(self,
+                             vm: &mut Vm,
                              used_shortcut: String,
                              display: DisplayPoint,
                              world: WorldPoint)
@@ -37,7 +39,7 @@ impl Menu {
                           .iter()
                           .any(|entry_shortcut| &used_shortcut == entry_shortcut)
                   })
-            .and_then(move |entry| entry.action.start(display, world))
+            .and_then(move |entry| entry.action.start(vm, display, world))
     }
 }
 
@@ -46,6 +48,13 @@ pub struct VisibleMenu {
     page: Cell<usize>,
     last_touch: Cell<DisplayPoint>,
 }
+
+use std::f64::consts::PI;
+const MARGIN: f64 = 1.;
+const NEAR: f64 = PARAM_RADIUS + MARGIN;
+const FAR: f64 = NEAR + PARAM_RADIUS * 2.;
+const ANGLE: f64 = PI / 8.;
+const ANGLE_START: f64 = ANGLE * 6.;
 
 impl VisibleMenu {
     pub fn new(menu: Menu, touch: DisplayPoint) -> Rc<VisibleMenu> {
@@ -63,45 +72,78 @@ impl Visible for Rc<VisibleMenu> {
         c.translate(pos.x, pos.y);
         c.fillStyle(self.menu.color.as_ref());
         c.fillCircle(0., 0., PARAM_RADIUS);
-        // self.menu.entries.iter().enumerate()
-        use std::f64::consts::PI;
-        let margin: f64 = 1.;
-        let near = PARAM_RADIUS + margin;
-        let far = near + PARAM_RADIUS * 2.;
-        let a = PI / 8.;
-        let near_a = a - (margin / 2.).atan2(near);
-        let far_a = a - (margin / 2.).atan2(far);
-        let mut mid = PI * 0.25 * 3.;
-        for _ in 0..7 {
+        //
+        let near_a = ANGLE - (MARGIN / 2.).atan2(NEAR);
+        let far_a = ANGLE - (MARGIN / 2.).atan2(FAR);
+        let mut mid = ANGLE_START;
+        for (i, entry) in self.menu.entries.iter().enumerate() {
             c.beginPath();
-            c.arc(0., 0., near, mid - near_a, mid + near_a, false);
-            c.arc(0., 0., far, mid + far_a, mid - far_a, true);
-
+            c.arc(0., 0., NEAR, mid - near_a, mid + near_a, false);
+            c.arc(0., 0., FAR, mid + far_a, mid - far_a, true);
+            c.fillStyle(self.menu.color.as_ref());
             c.fill();
-            mid += PI / 4.;
+            let x = mid.cos();
+            let y = mid.sin();
+            if x < -0.1 {
+                c.textAlign("right");
+            } else if x > 0.1 {
+                c.textAlign("left");
+            } else {
+                c.textAlign("center");
+            }
+            if y < -0.9 {
+                c.textBaseline("bottom");
+            } else if y > 0.9 {
+                c.textBaseline("top");
+            } else {
+                c.textBaseline("middle");
+            }
+            let mut text = entry.name.clone();
+            if !entry.shortcuts.is_empty() {
+                text.push_str(" [");
+                text.push_str(entry.shortcuts.join(",").as_ref());
+                text.push_str("]");
+            }
+            c.fillStyle("#000");
+            c.fillText(text.as_ref(), x * (FAR + 3.), y * (FAR + 3.));
+            mid += ANGLE * 2.;
         }
     }
-
-    fn start_touch(&self,
-                   display: &DisplayPoint,
-                   world: &WorldPoint)
-                   -> Option<Box<TouchReceiver>> {
-        return None;
+    fn make_menu(&self, d: DisplayPoint, w: WorldPoint) -> Option<Menu> {
+        None
     }
 }
 
 impl TouchReceiver for Rc<VisibleMenu> {
     fn continue_touch(self: Box<Self>,
-                      next: DisplayPoint,
-                      _: WorldPoint)
+                      vm: &mut Vm,
+                      display: DisplayPoint,
+                      world: WorldPoint)
                       -> Option<Box<TouchReceiver>> {
         let prev = self.last_touch.get();
-        let delta = next - prev;
+        let delta = display - prev;
         let len = delta.x.hypot(delta.y);
-        if len < PARAM_RADIUS {
-            self.last_touch.set(prev + delta / PARAM_RADIUS * 0.2);
+        let l = len / PARAM_RADIUS;
+        let a = delta.y.atan2(delta.x);
+        if len > FAR {
+            return Rc::try_unwrap(*self)
+                       .ok()
+                       .unwrap()
+                       .menu
+                       .entries
+                       .into_iter()
+                       .next()
+                       .unwrap()
+                       .action
+                       .start(vm, display, world);
         }
+        /*
+        if len < PARAM_RADIUS {
+            self.last_touch
+                .set(prev + DisplayPoint::new(a.cos(), a.sin()) * l * 0.2);
+        }
+         */
         Some(self)
     }
-    fn end_touch(self: Box<Self>) {}
+    fn end_touch(self: Box<Self>, _: &mut Vm) {}
 }

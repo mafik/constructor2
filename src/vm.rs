@@ -36,10 +36,6 @@ use touch::*;
 
 static FONT: &'static [u8] = include_bytes!("html/fonts/iosevka-regular.ttf");
 
-fn start_touch<V: Visible>(v: &Vec<V>, d: &DisplayPoint, p: &WorldPoint) -> Option<Box<TouchReceiver>> {
-    walk_visible(v, |elem| { elem.start_touch(d, p) })
-}
-
 fn walk_visible<V: Visible, T, F: FnMut(&Visible)->Option<T>>(v: &Vec<V>, mut f: F) -> Option<T> {
     for visible in v.iter() {
         let result = f(visible as &Visible);
@@ -54,7 +50,7 @@ pub struct Vm {
     pub blueprints: Vec<Rc<RefCell<Blueprint>>>,
     pub active_blueprint: Weak<RefCell<Blueprint>>,
 
-    tasks: VecDeque<Weak<RefCell<Object>>>,
+    pub tasks: VecDeque<Weak<RefCell<Object>>>,
 
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
@@ -179,17 +175,31 @@ impl Vm {
         c.restore();
     }
 
-    fn make_menu(&mut self, p: WorldPoint) -> Menu {
-        Menu {
-            entries: vec![
-                Entry {
+    fn make_menu(&mut self) -> Menu {
+        let d = self.mouse_display();
+        let w = self.mouse_world();
+        let move_view = Entry {
                     name: "Move view".to_string(),
                     color: None,
                     shortcuts: vec!["MMB".to_string()],
                     action: Box::new(MovePointAction::new(Rc::downgrade(&self.center), true)),
-                },
+                };
+        
+        {
+            let blueprint = self.active_blueprint.upgrade().unwrap();
+            let blueprint = blueprint.borrow();
+            let frames = blueprint.frames.clone();
+            
+            if let Some(mut frame_menu) = walk_visible(&frames, |frame| { frame.make_menu(d, w) }) {
+                frame_menu.entries.push(move_view);
+                return frame_menu;
+            }
+        }
+        Menu {
+            entries: vec![
+                move_view,
             ],
-            color: "#888".to_string(),
+            color: "#f49e42".to_string(),
         }
         /*
         let mut frames;
@@ -211,6 +221,12 @@ impl Vm {
         let visible_menu_rc = VisibleMenu::new(menu, point);
         self.menus.push(Rc::downgrade(&visible_menu_rc));
         Some(Box::new(visible_menu_rc))
+    }
+
+    fn activate_shortcut(&mut self, menu: Menu, code: String) -> Option<Box<TouchReceiver>> {
+        let d = self.mouse_display();
+        let w = self.mouse_world();
+        menu.activate_shortcut(self, code, d, w)
     }
 
     fn process_event(&mut self, event: Event) {
@@ -302,10 +318,10 @@ impl Vm {
                     }
                     let display_point = self.mouse_display();
                     let world_point = self.mouse_world();
-                    let menu = self.make_menu(world_point.clone());
+                    let menu = self.make_menu();
                     self.mouse_handler = match button {
-                        0 => menu.activate_shortcut("LMB".to_string(), display_point, world_point),
-                        1 => menu.activate_shortcut("MMB".to_string(), display_point, world_point),
+                        0 => menu.activate_shortcut(self, "LMB".to_string(), display_point, world_point),
+                        1 => menu.activate_shortcut(self, "MMB".to_string(), display_point, world_point),
                         2 => self.open_menu(menu, display_point),
                         _ => None,
                     };
@@ -317,7 +333,7 @@ impl Vm {
                     button: button,
                 } => {
                     match self.mouse_handler.take() {
-                        Some(touch_receiver) => touch_receiver.end_touch(),
+                        Some(touch_receiver) => touch_receiver.end_touch(self),
                         None => (),
                     }
                     self.update_clients();
@@ -328,7 +344,7 @@ impl Vm {
                     let world = self.mouse_world();
 
                     let taken = self.mouse_handler.take();
-                    let taken = taken.and_then(|b| b.continue_touch(display, world));
+                    let taken = taken.and_then(|b| b.continue_touch(self, display, world));
                     self.mouse_handler = taken;
                     
                     if self.mouse_handler.is_some() {
@@ -337,9 +353,17 @@ impl Vm {
                 }
                 Event::KeyDown { code: code, key: key } => {
                     println!("Pressed key {}, code {}", key, code);
+                    if self.mouse_handler.is_some() {
+                        return;
+                    }
+                    let menu = self.make_menu();
+                    self.mouse_handler = match code.as_ref() {
+                        "Delete" => self.activate_shortcut(menu, code.clone()),
+                        "Space" => self.activate_shortcut(menu, code.clone()),
+                        _ => None,
+                    };
                     if let Some(weak) = self.mouse_object() {
                         let rc = weak.upgrade().unwrap();
-                        let mut update = false;
                         {
                             let mut object = rc.borrow_mut();
                             if ref_eq::ref_eq(object.frame.borrow().typ, &text_type) {
@@ -347,23 +371,15 @@ impl Vm {
                                     let mut contents = object.data
                                         .downcast_mut::<String>().unwrap();
                                     contents.push_str(key.as_ref());
-                                    update = true;
                                 } else if key == "Backspace" {
                                     let mut contents = object.data
                                         .downcast_mut::<String>().unwrap();
                                     contents.pop();
-                                    update = true;
-                                }
-                            } else {
-                                if code == "Enter" {
-                                    self.tasks.push_back(weak);
                                 }
                             }
                         }
-                        if update {
-                            self.update_clients();
-                        }
                     }
+                    self.update_clients();
                 }
                 Event::DisplaySize {
                     width: w,

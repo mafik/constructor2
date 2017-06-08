@@ -6,6 +6,7 @@ use WorldPoint;
 use DisplayPoint;
 use TouchReceiver;
 use LinkTerminator;
+use vm::Vm;
 
 #[derive(Clone, Copy)]
 pub enum LinkSide {
@@ -21,6 +22,7 @@ pub struct DragLink {
 
 impl TouchReceiver for DragLink {
     fn continue_touch(mut self: Box<Self>,
+                      vm: &mut Vm,
                       display: DisplayPoint,
                       new_pos: WorldPoint)
                       -> Option<Box<TouchReceiver>> {
@@ -38,7 +40,7 @@ impl TouchReceiver for DragLink {
         self.pos = new_pos;
         Some(self)
     }
-    fn end_touch(self: Box<Self>) {
+    fn end_touch(self: Box<Self>, _: &mut Vm) {
         let mut link = self.link.borrow_mut();
         let blueprint_rc = link.blueprint.upgrade().unwrap();
         let mut blueprint = blueprint_rc.borrow_mut();
