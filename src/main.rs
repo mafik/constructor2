@@ -1,20 +1,14 @@
 /*
 TODOs:
-- Draw right number of menu items (DONE)
-- Draw text next to menu items (DONE)
-- Include shortcuts (DONE)
-- Choose pretty color for main menu (DONE)
-- Add option for moving a frame (DONE)
-- Add option for linking a parameter (DONE)
-- Add option for deleting a frame (DONE)
-- Add option for activating frames (DONE)
-- Ensure that a frame can be safely deleted (consume the Rc)
+- Ensure that a frame can be safely deleted (consume the Rc) (DONE)
 - Activate the right option (instead of the first one)
 - Add options for creating new frames (text, process)
-- Draw background below menu entry name
-- Multiple mouse handlers at the same time
+- State save & restore saving
 
 On hold:
+- Cleanups - a - lot
+- Menu improvements (draw background below menu entry name)
+- Multiple mouse handlers at the same time
 - Performance monitoring
 - Interactive error reporting
 - Move per-client parameters to separate struct
@@ -361,6 +355,31 @@ impl Action for DeleteFrameAction {
                    .enumerate()
                    .find(|x| Rc::ptr_eq(x.1, &frame)) {
                 blueprint.frames.swap_remove(index);
+
+                blueprint
+                    .links
+                    .retain(|link_rc| {
+                        fn side_retain(f: &Rc<RefCell<Frame>>, t: &LinkTerminator) -> bool {
+                            match t {
+                                &LinkTerminator::Frame(ref other_frame) => {
+                                    !Rc::ptr_eq(f, other_frame)
+                                }
+                                &LinkTerminator::FrameParam(ref frame_param) => {
+                                    !Rc::ptr_eq(f, &frame_param.frame)
+                                }
+                                _ => true,
+                            }
+                        }
+                        let link = link_rc.borrow();
+                        return side_retain(&frame, &link.a) && side_retain(&frame, &link.b);
+                    });
+                for machine in blueprint.machines.iter() {
+                    let mut machine = machine.borrow_mut();
+                    machine
+                        .objects
+                        .retain(|o_rc| !Rc::ptr_eq(&o_rc.borrow().frame, &frame));
+                }
+                let frame = Rc::try_unwrap(frame).ok().unwrap();
             }
         }
         None
@@ -675,8 +694,10 @@ fn main() {
     new_text(&blueprint, "/bin/ls", -20., -20., 50., 10.);
     new_text(&blueprint, "/home/mrogalski", -20., 20., 50., 10.);
 
-    let process_frame = Frame::new(&process_type, &blueprint, true);
-    process_frame.borrow_mut().pos.x += 20.;
+    {
+        let process_frame = Frame::new(&process_type, &blueprint, true);
+        process_frame.borrow_mut().pos.x += 20.;
+    }
 
     vm.run();
 }

@@ -8,7 +8,7 @@ use Frame;
 
 pub struct Machine {
     blueprint: Weak<RefCell<Blueprint>>,
-    objects: Vec<Rc<RefCell<Object>>>,
+    pub objects: Vec<Rc<RefCell<Object>>>,
 }
 
 impl Machine {
@@ -25,14 +25,13 @@ impl Machine {
         blueprint.machines.push(m.clone());
         return m;
     }
-    
+
     pub fn push(&mut self, object: Object) {
         self.objects.push(Rc::new(RefCell::new(object)));
     }
 
     pub fn get_object(&self, frame_rc: &Rc<RefCell<Frame>>) -> Rc<RefCell<Object>> {
-        self
-            .objects
+        self.objects
             .iter()
             .find(|o| Rc::ptr_eq(&o.borrow().frame, frame_rc))
             .unwrap()
@@ -40,8 +39,7 @@ impl Machine {
     }
 
     pub fn with_object<F: FnMut(&mut Object)>(&mut self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
-        let object = self
-            .objects
+        let object = self.objects
             .iter_mut()
             .find(|o| Rc::ptr_eq(&o.borrow().frame, frame_rc))
             .unwrap();
