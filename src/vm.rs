@@ -2,6 +2,7 @@ extern crate websocket;
 extern crate rusttype;
 extern crate serde_json;
 extern crate ref_eq;
+extern crate serde;
 
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
@@ -14,6 +15,8 @@ use std::thread;
 use blueprint::*;
 use json_canvas::*;
 use canvas::*;
+use process_type;
+use empty_type;
 use text_type;
 use menu::*;
 use RunArgs;
@@ -31,6 +34,8 @@ use ObjectCell;
 use euclid::ScaleFactor;
 use DisplayMillimetreSpace;
 use WorldMillimetreSpace;
+use Type;
+use AddFrameAction;
 use http;
 use touch::*;
 
@@ -52,6 +57,8 @@ pub struct Vm {
 
     pub tasks: VecDeque<Weak<RefCell<Object>>>,
 
+    types: Vec<&'static Type>,
+
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
     websocket_clients: HashMap<i64, websocket::sender::Writer<TcpStream>>,
@@ -68,7 +75,67 @@ pub struct Vm {
     zoom: ScaleFactor<f64, DisplayMillimetreSpace, WorldMillimetreSpace>,
 }
 
+use self::serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct};
+
+struct Blueprints<'a>(&'a Vec<Rc<RefCell<Blueprint>>>);
+
+impl <'a> Serialize for Blueprints<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer {
+        use std::ops::Deref;
+        let mut blueprint_seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (i, b) in self.0.iter().enumerate() {
+            blueprint_seq.serialize_element(b.borrow().deref())?;
+        }
+        blueprint_seq.end()
+    }
+}
+
+struct Tasks<'a> (&'a Vm);
+
+impl <'a> Serialize for Tasks<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer {
+        use std::ops::Deref;
+        let mut task_seq = serializer.serialize_seq(None)?;
+        for task in self.0.tasks.iter() {
+            if let Some(task) = task.upgrade() {
+                let task = task.borrow();
+                let frame = task.frame.borrow();
+                let blueprint = frame.blueprint.upgrade().unwrap();
+                let blueprint_index = self.0.blueprint_index(&blueprint);
+                let blueprint = blueprint.borrow();
+                let frame_index = blueprint.frame_index(&task.frame);
+                let machine = task.machine.upgrade().unwrap();
+                let machine_index = blueprint.machine_index(&machine);
+                let tuple = (blueprint_index, frame_index, machine_index);
+                task_seq.serialize_element(&tuple)?;
+            }
+        }
+        task_seq.end()
+    }
+}
+
+impl Serialize for Vm {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer {
+        let mut serializer = serializer.serialize_struct("Vm", 3)?;
+        serializer.serialize_field("blueprints", &Blueprints(&self.blueprints))?;
+        let active_blueprint = self.active_blueprint.upgrade().unwrap();
+        let active_blueprint = self.blueprint_index(&active_blueprint);
+        serializer.serialize_field("active_blueprint", &active_blueprint);
+        serializer.serialize_field("tasks", &Tasks(self));
+        serializer.end()
+    }
+}
+
 impl Vm {
+    fn blueprint_index(&self, blueprint: &Rc<RefCell<Blueprint>>) -> u32 {
+        for (i, other) in self.blueprints.iter().enumerate() {
+            if Rc::ptr_eq(blueprint, other) { return i as u32; }
+        }
+        panic!("Bad blueprint reference");
+    }
     fn mouse_object(&self) -> Option<Weak<RefCell<Object>>> {
         let world_point = self.mouse_world();
         let blueprint_rc = self.active_blueprint.upgrade().unwrap();
@@ -110,6 +177,7 @@ impl Vm {
         Vm {
             blueprints: Vec::new(),
             active_blueprint: Weak::new(),
+            types: vec![&process_type, &text_type, &empty_type],
             tasks: VecDeque::new(),
             rx: rx,
             tx: tx,
@@ -183,7 +251,15 @@ impl Vm {
                     color: None,
                     shortcuts: vec!["MMB".to_string()],
                     action: Box::new(MovePointAction::new(Rc::downgrade(&self.center), true)),
-                };
+        };
+        let type_entries = self.types.iter().map(|typ| {
+            Entry {
+                name: format!("New {}", typ.name),
+                color: None,
+                shortcuts: Vec::new(),
+                action: Box::new(AddFrameAction::new(typ)),
+            }
+        });
         
         {
             let blueprint = self.active_blueprint.upgrade().unwrap();
@@ -192,13 +268,16 @@ impl Vm {
             
             if let Some(mut frame_menu) = walk_visible(&frames, |frame| { frame.make_menu(d, w) }) {
                 frame_menu.entries.push(move_view);
+                frame_menu.entries.extend(type_entries);
                 return frame_menu;
             }
         }
+
+        let mut menu_entries = vec![move_view];
+        menu_entries.extend(type_entries);
+        
         Menu {
-            entries: vec![
-                move_view,
-            ],
+            entries: menu_entries,
             color: "#f49e42".to_string(),
         }
         /*
@@ -344,10 +423,11 @@ impl Vm {
                     let world = self.mouse_world();
 
                     let taken = self.mouse_handler.take();
+                    let update = taken.is_some();
                     let taken = taken.and_then(|b| b.continue_touch(self, display, world));
                     self.mouse_handler = taken;
                     
-                    if self.mouse_handler.is_some() {
+                    if update {
                         self.update_clients();
                     }
                 }

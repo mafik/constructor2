@@ -1,5 +1,6 @@
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
+extern crate serde;
 
 use Vm;
 use Frame;
@@ -14,6 +15,27 @@ pub struct Blueprint {
     pub links: Vec<Rc<RefCell<Link>>>,
     pub machines: Vec<Rc<RefCell<Machine>>>,
     pub active_machine: Weak<RefCell<Machine>>,
+}
+
+use self::serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct};
+
+impl Serialize for Blueprint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer
+    {
+        let mut serializer = serializer.serialize_struct("Blueprint", 0)?;
+        serializer.end()
+        /*
+        use std::ops::Deref;
+        serializer.serialize_str(self.name.as_ref())?;
+        let mut frame_seq = serializer.serialize_seq(Some(self.frames.len()))?;
+        for frame in self.frames.iter() {
+            let i = 42;
+            frame_seq.serialize_element(&i)?;
+        }
+        frame_seq.end()
+         */
+    }
 }
 
 impl Blueprint {
@@ -52,6 +74,27 @@ impl Blueprint {
     }
 
     pub fn query_frame(&self, p: WorldPoint) -> Option<Rc<RefCell<Frame>>> {
-        self.frames.iter().find(|frame_rc| frame_rc.borrow().hit_test(&p)).cloned()
+        self.frames
+            .iter()
+            .find(|frame_rc| frame_rc.borrow().hit_test(&p))
+            .cloned()
+    }
+
+    pub fn frame_index(&self, frame: &Rc<RefCell<Frame>>) -> u32 {
+        for (i, other) in self.frames.iter().enumerate() {
+            if Rc::ptr_eq(frame, other) {
+                return i as u32;
+            }
+        }
+        panic!("Bad frame reference");
+    }
+
+    pub fn machine_index(&self, machine: &Rc<RefCell<Machine>>) -> u32 {
+        for (i, other) in self.machines.iter().enumerate() {
+            if Rc::ptr_eq(machine, other) {
+                return i as u32;
+            }
+        }
+        panic!("Bad machine reference");
     }
 }

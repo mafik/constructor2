@@ -1,9 +1,13 @@
 /*
 TODOs:
-- Ensure that a frame can be safely deleted (consume the Rc) (DONE)
-- Activate the right option (instead of the first one)
-- Add options for creating new frames (text, process)
-- State save & restore saving
+- Activate the right option (instead of the first one) (DONE)
+- Add options for creating new frames (text, process) (DONE)
+- Implement Serialize for Blueprint
+- Implement Serialize for Frame
+- Implement Serialize for Machine
+- Implement Serialize for Object
+- Store VM state on Ctrl+C
+- Restore VM state upon loading
 
 On hold:
 - Cleanups - a - lot
@@ -18,6 +22,7 @@ On hold:
 
 extern crate hyper;
 extern crate euclid;
+extern crate serde_json;
 
 mod http;
 mod canvas;
@@ -324,6 +329,30 @@ impl Action for RunAction {
     }
 }
 
+struct AddFrameAction {
+    typ: &'static Type,
+}
+
+impl AddFrameAction {
+    fn new(typ: &'static Type) -> AddFrameAction {
+        AddFrameAction { typ: typ }
+    }
+}
+
+impl Action for AddFrameAction {
+    fn start(self: Box<Self>,
+             vm: &mut Vm,
+             d: DisplayPoint,
+             w: WorldPoint)
+             -> Option<Box<TouchReceiver>> {
+        let blueprint = vm.active_blueprint.upgrade().unwrap();
+        let frame = Frame::new(self.typ, &blueprint, true);
+        frame.borrow_mut().pos = w;
+
+        Box::new(DragFrameAction::new(&frame, DragMode::Drag, DragMode::Drag)).start(vm, d, w)
+    }
+}
+
 struct DeleteFrameAction {
     frame: Weak<RefCell<Frame>>,
 }
@@ -589,7 +618,6 @@ struct Type {
     init: &'static (Fn(&mut Object) + Sync),
     run: &'static (Fn(RunArgs) + Sync),
     draw: &'static (Fn(&Object, &mut Canvas) + Sync),
-    menu: &'static (Fn(ObjectCell, WorldPoint) -> menu::Menu + Sync),
 }
 
 static text_type: Type = Type {
@@ -605,12 +633,14 @@ static text_type: Type = Type {
                         2.,
                         2. + font_metrics.ascent as f64);
     },
-    menu: &|object_rc, p| {
-        menu::Menu {
-            entries: Vec::new(),
-            color: "#888".to_string(),
-        }
-    },
+};
+
+static empty_type: Type = Type {
+    name: "Empty",
+    parameters: &[],
+    init: &|o: &mut Object| {},
+    run: &|args: RunArgs| {},
+    draw: &|o: &Object, canvas: &mut Canvas| {},
 };
 
 static process_type: Type = Type {
@@ -662,12 +692,6 @@ static process_type: Type = Type {
         println!("Missing Command argument!");
     },
     draw: &|o: &Object, canvas: &mut Canvas| {},
-    menu: &|object_rc, p| {
-        menu::Menu {
-            entries: Vec::new(),
-            color: "#888".to_string(),
-        }
-    },
 };
 
 fn new_text(blueprint_rc: &Rc<RefCell<Blueprint>>,
@@ -698,6 +722,9 @@ fn main() {
         let process_frame = Frame::new(&process_type, &blueprint, true);
         process_frame.borrow_mut().pos.x += 20.;
     }
+
+    let buffer = serde_json::to_string(&vm).ok().unwrap();
+    println!("{}", buffer);
 
     vm.run();
 }

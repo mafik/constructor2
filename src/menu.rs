@@ -126,16 +126,15 @@ impl TouchReceiver for Rc<VisibleMenu> {
         let l = len / PARAM_RADIUS;
         let a = delta.y.atan2(delta.x);
         if len > FAR {
-            return Rc::try_unwrap(*self)
-                       .ok()
-                       .unwrap()
-                       .menu
-                       .entries
-                       .into_iter()
-                       .next()
-                       .unwrap()
-                       .action
-                       .start(vm, display, world);
+            let i = ((2. * PI + a - (ANGLE_START - ANGLE)) / (ANGLE * 2.)) as usize % 8;
+            let mut entries = Rc::try_unwrap(*self).ok().unwrap().menu.entries;
+            if i >= entries.len() {
+                None
+            } else {
+                entries.swap_remove(i).action.start(vm, display, world)
+            }
+        } else {
+            Some(self)
         }
         /*
         if len < PARAM_RADIUS {
@@ -143,7 +142,6 @@ impl TouchReceiver for Rc<VisibleMenu> {
                 .set(prev + DisplayPoint::new(a.cos(), a.sin()) * l * 0.2);
         }
          */
-        Some(self)
     }
     fn end_touch(self: Box<Self>, _: &mut Vm) {}
 }
