@@ -29,10 +29,15 @@ impl Serialize for Blueprint {
     {
         let mut serializer = serializer.serialize_struct("Blueprint", 4)?;
         serializer.serialize_field("name", &self.name)?;
-        serializer.serialize_field("frames", &SerializableVec(&self.frames))?;
-        serializer.serialize_field("links", &SerializableVec(&self.links))?;
-        serializer.serialize_field("machines", &SerializableVec(&self.machines))?;
-        serializer.serialize_field("active_machine", &self.machine_index(&self.active_machine.upgrade().unwrap()))?;
+        serializer
+            .serialize_field("frames", &SerializableVec(&self.frames))?;
+        serializer
+            .serialize_field("links", &SerializableVec(&self.links))?;
+        serializer
+            .serialize_field("machines", &SerializableVec(&self.machines))?;
+        serializer
+            .serialize_field("active_machine",
+                             &self.machine_index(&self.active_machine.upgrade().unwrap()))?;
         serializer.end()
         /*
         use std::ops::Deref;
@@ -50,13 +55,13 @@ impl Serialize for Blueprint {
 impl Blueprint {
     pub fn new(vm: &Rc<RefCell<Vm>>) -> Rc<RefCell<Blueprint>> {
         let bp = Rc::new(RefCell::new(Blueprint {
-            vm: Rc::downgrade(vm),
-            name: String::new(),
-            frames: Vec::new(),
-            links: Vec::new(),
-            machines: Vec::new(),
-            active_machine: Weak::new(),
-        }));
+                                          vm: Rc::downgrade(vm),
+                                          name: String::new(),
+                                          frames: Vec::new(),
+                                          links: Vec::new(),
+                                          machines: Vec::new(),
+                                          active_machine: Weak::new(),
+                                      }));
         vm.borrow_mut().blueprints.push(bp.clone());
         return bp;
     }
@@ -72,15 +77,11 @@ impl Blueprint {
             let typ = vm.types.iter().find(|typ| typ.name == type_name).unwrap();
             let frame = Frame::new(typ, &blueprint_rc, global);
             let pos_array = frame_json.get("pos").unwrap().as_array().unwrap();
-            frame.borrow_mut().pos = WorldPoint::new(
-                pos_array[0].as_f64().unwrap(),
-                pos_array[1].as_f64().unwrap(),
-            );
+            frame.borrow_mut().pos = WorldPoint::new(pos_array[0].as_f64().unwrap(),
+                                                     pos_array[1].as_f64().unwrap());
             let size_array = frame_json.get("size").unwrap().as_array().unwrap();
-            frame.borrow_mut().size = WorldSize::new(
-                size_array[0].as_f64().unwrap(),
-                size_array[1].as_f64().unwrap(),
-            );
+            frame.borrow_mut().size = WorldSize::new(size_array[0].as_f64().unwrap(),
+                                                     size_array[1].as_f64().unwrap());
         }
 
         let name = json.get("name").unwrap().as_str().unwrap();
@@ -90,24 +91,31 @@ impl Blueprint {
         for link_json in links.iter() {
 
             use LinkTerminator;
-            fn parse_terminator(blueprint: &Blueprint, link_json: &serde_json::Value, side: &str) -> LinkTerminator {
+            fn parse_terminator(blueprint: &Blueprint,
+                                link_json: &serde_json::Value,
+                                side: &str)
+                                -> LinkTerminator {
                 let a = link_json.get(side).unwrap().as_object().unwrap();
                 let terminator_type = a.keys().next().unwrap();
                 use FrameParam;
                 match terminator_type.as_ref() {
                     "Frame" => {
-                        let frame_idx = a.get("Frame").unwrap().as_array().unwrap()[0].as_u64().unwrap();
+                        let frame_idx = a.get("Frame").unwrap().as_array().unwrap()[0]
+                            .as_u64()
+                            .unwrap();
                         LinkTerminator::Frame(blueprint.frames[frame_idx as usize].clone())
-                    },
+                    }
                     "FrameParam" => {
                         let ref frame_param = a.get("FrameParam").unwrap().as_array().unwrap()[0];
                         let frame_idx = frame_param.get("frame").unwrap().as_u64().unwrap().clone();
-                        let param_index = frame_param.get("param_index").unwrap().as_u64().unwrap() as usize;
+                        let param_index =
+                            frame_param.get("param_index").unwrap().as_u64().unwrap() as usize;
                         LinkTerminator::FrameParam(FrameParam {
-                            frame: blueprint.frames[frame_idx as usize].clone(),
-                            param_index: param_index,
-                        })
-                    },
+                                                       frame: blueprint.frames[frame_idx as usize]
+                                                           .clone(),
+                                                       param_index: param_index,
+                                                   })
+                    }
                     _ => panic!("Unknown LinkTerminator type"),
                 }
             }
@@ -126,7 +134,6 @@ impl Blueprint {
         for machine_json in machines.iter() {
             let machine = Machine::new(&blueprint_rc);
             Machine::load_json(&machine, machine_json);
-            blueprint_rc.borrow_mut().machines.push(machine);
         }
         let active_machine = json.get("active_machine").unwrap().as_i64().unwrap();
         let weak = Rc::downgrade(&blueprint_rc.borrow().machines[active_machine as usize]);
