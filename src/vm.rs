@@ -138,9 +138,7 @@ impl Vm {
         let frame_rc = blueprint.query_frame(world_point);
         if frame_rc.is_none() { return None; }
         let frame_rc = frame_rc.unwrap();
-        let machine_rc = blueprint.active_machine.upgrade().unwrap();
-        let machine = machine_rc.borrow();
-        return Some(Rc::downgrade(&machine.get_object(&frame_rc)));
+        return Some(Rc::downgrade(&blueprint.get_object(&frame_rc)));
     }
     fn mouse_display(&self) -> DisplayPoint {
         self.display.to_millimetre(self.mouse)
@@ -268,6 +266,24 @@ impl Vm {
         draw(&blueprint.frames, c);
         draw(&blueprint.links, c);
         c.restore();
+
+        use PARAM_RADIUS;
+        let pixel_scale = self.display.pixel_size().get();
+        let half_width = self.display.size.x * 0.5 * pixel_scale;
+        let half_height = self.display.size.y * 0.5 * pixel_scale;
+        let mut top = -half_height + PARAM_RADIUS * 2.;
+        let left = -half_width + PARAM_RADIUS * 2.;
+        let active_machine = blueprint.active_machine.upgrade().unwrap();
+        for machine in blueprint.machines.iter() {
+            let fill_style = if Rc::ptr_eq(machine, &active_machine) {
+                "#3e64a3"
+            } else {
+                "#959ba5"
+            };
+            c.fillStyle(fill_style);
+            c.fillCircle(left, top, PARAM_RADIUS);
+            top += PARAM_RADIUS * 3.;
+        }
 
         let menus_rc = self.menus.iter().filter_map(|x| x.upgrade()).collect();
         draw(&menus_rc, c);
@@ -470,7 +486,7 @@ impl Vm {
                 }
                 Event::KeyDown { code: code, key: key } => {
                     println!("Pressed key {}, code {}", key, code);
-                    if code == "Insert" {
+                    if code == "Print" {
                         use std::fs::File;
                         use std::io::Write;
                         let mut file = File::create("vm.json").ok().unwrap();
@@ -478,6 +494,32 @@ impl Vm {
                         file.write_all(buffer.as_ref()).ok().unwrap();
                         println!("VM state saved");
                         return;
+                    }
+                    if code == "Insert" {
+                        use Machine;
+                        let machine = Machine::new(&self.active_blueprint.upgrade().unwrap());
+                    }
+                    if code == "Delete" {
+                        let bp = self.active_blueprint.upgrade().unwrap();
+                        let mut bp = bp.borrow_mut();
+                        let mc = bp.active_machine.upgrade().unwrap();
+                        let mut idx = bp.machines.iter().enumerate().find(|tup| Rc::ptr_eq(tup.1, &mc)).unwrap().0;
+                        if idx > 0 {
+                            bp.machines.remove(idx);
+                            if idx >= bp.machines.len() {
+                                idx -= 1;
+                            }
+                            bp.active_machine = Rc::downgrade(&bp.machines[idx]);
+                        }
+                    }
+                    if code == "PageDown" || code == "PageUp" {
+                        let bp = self.active_blueprint.upgrade().unwrap();
+                        let mut bp = bp.borrow_mut();
+                        let mc = bp.active_machine.upgrade().unwrap();
+                        let idx = bp.machines.iter().enumerate().find(|tup| Rc::ptr_eq(tup.1, &mc)).unwrap().0;
+                        let delta = if code == "PageDown" { 1 } else { bp.machines.len()-1 };
+                        let idx = (idx + delta) % bp.machines.len();
+                        bp.active_machine = Rc::downgrade(&bp.machines[idx]);
                     }
                     if self.mouse_handler.is_some() {
                         return;

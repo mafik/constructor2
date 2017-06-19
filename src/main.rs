@@ -1,14 +1,8 @@
 /*
 TODOs:
-- Implement Serialize for Frame (DONE)
-- Implement Serialize for Machine (DONE)
-- Implement Serialize for Blueprint (DONE)
-- Implement Serialize for Object (DONE)
-- Store VM state on Ctrl+C (DONE)
-- Restore VM state upon loading (DONE)
-- Restore the list of tasks (DONE)
-- Restore the list of frames (DONE)
-- Restore the list of links (DONE)
+- Show list of machines on the left (DONE)
+- Insert / Delet add / delete machines (DONE)
+- Page Up / Down switch between machines (DONE)
 
 On hold:
 - Cleanups - a - lot
@@ -62,7 +56,8 @@ struct SerializableVec<'a, T: 'a + Serialize>(&'a Vec<Rc<RefCell<T>>>);
 
 impl<'a, T: Serialize> Serialize for SerializableVec<'a, T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer
+    where
+        S: Serializer,
     {
         use std::ops::Deref;
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
@@ -78,7 +73,8 @@ struct SerializablePoint2D<'a, T: 'a>(&'a TypedPoint2D<f64, T>);
 
 impl<'a, T: 'a> Serialize for SerializablePoint2D<'a, T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer
+    where
+        S: Serializer,
     {
         let mut tup = serializer.serialize_tuple(2)?;
         tup.serialize_element(&self.0.x)?;
@@ -91,7 +87,8 @@ struct SerializableSize2D<'a, T: 'a>(&'a TypedSize2D<f64, T>);
 
 impl<'a, T: 'a> Serialize for SerializableSize2D<'a, T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer
+    where
+        S: Serializer,
     {
         let mut tup = serializer.serialize_tuple(2)?;
         tup.serialize_element(&self.0.width)?;
@@ -138,11 +135,12 @@ impl Display {
 }
 
 trait TouchReceiver {
-    fn continue_touch(self: Box<Self>,
-                      vm: &mut Vm,
-                      display: DisplayPoint,
-                      world: WorldPoint)
-                      -> Option<Box<TouchReceiver>>;
+    fn continue_touch(
+        self: Box<Self>,
+        vm: &mut Vm,
+        display: DisplayPoint,
+        world: WorldPoint,
+    ) -> Option<Box<TouchReceiver>>;
     fn end_touch(self: Box<Self>, &mut Vm);
 }
 
@@ -162,9 +160,11 @@ impl FrameParam {
     fn center(&self) -> WorldPoint {
         let frame = self.frame.borrow();
         frame.pos +
-        WorldPoint::new(PARAM_RADIUS - frame.size.width * 0.5,
-                        frame.size.height * 0.5 + -PARAM_RADIUS +
-                        (PARAM_RADIUS * 2. + PARAM_SPACING) * (self.param_index as f64 + 1.))
+            WorldPoint::new(
+                PARAM_RADIUS - frame.size.width * 0.5,
+                frame.size.height * 0.5 + -PARAM_RADIUS +
+                    (PARAM_RADIUS * 2. + PARAM_SPACING) * (self.param_index as f64 + 1.),
+            )
     }
 }
 
@@ -175,9 +175,11 @@ impl Visible for FrameParam {
         c.fillStyle("white");
         c.fillCircle(center.x, center.y, PARAM_RADIUS);
         c.fillStyle("black");
-        c.fillText(param.name,
-                   center.x + PARAM_RADIUS + PARAM_SPACING,
-                   center.y);
+        c.fillText(
+            param.name,
+            center.x + PARAM_RADIUS + PARAM_SPACING,
+            center.y,
+        );
     }
     fn make_menu(&self, d: DisplayPoint, w: WorldPoint) -> Option<Menu> {
         let center = self.center();
@@ -185,14 +187,16 @@ impl Visible for FrameParam {
         let dist = q.dot(q).sqrt();
         if dist < PARAM_RADIUS {
             Some(Menu {
-                     entries: vec![Entry {
-                                       name: "Connect".to_string(),
-                                       color: None,
-                                       shortcuts: vec!["LMB".to_string()],
-                                       action: Box::new(ConnectParamAction::new(self)),
-                                   }],
-                     color: "#888".to_string(),
-                 })
+                entries: vec![
+                    Entry {
+                        name: "Connect".to_string(),
+                        color: None,
+                        shortcuts: vec!["LMB".to_string()],
+                        action: Box::new(ConnectParamAction::new(self)),
+                    },
+                ],
+                color: "#888".to_string(),
+            })
         } else {
             None
         }
@@ -210,27 +214,28 @@ impl ConnectParamAction {
 }
 
 impl Action for ConnectParamAction {
-    fn start(self: Box<Self>,
-             _: &mut Vm,
-             d: DisplayPoint,
-             w: WorldPoint)
-             -> Option<Box<TouchReceiver>> {
+    fn start(
+        self: Box<Self>,
+        _: &mut Vm,
+        d: DisplayPoint,
+        w: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         let frame_param = (*self).frame_param;
         let blueprint_weak = frame_param.frame.borrow().blueprint.clone();
         let blueprint_rc = blueprint_weak.upgrade().unwrap();
         let mut blueprint = blueprint_rc.borrow_mut();
         let link_rc = Rc::new(RefCell::new(Link {
-                                               blueprint: blueprint_weak,
-                                               a: LinkTerminator::FrameParam(frame_param),
-                                               b: LinkTerminator::Point(w),
-                                               order: 0,
-                                           }));
+            blueprint: blueprint_weak,
+            a: LinkTerminator::FrameParam(frame_param),
+            b: LinkTerminator::Point(w),
+            order: 0,
+        }));
         blueprint.links.push(link_rc.clone());
         Some(Box::new(DragLink {
-                          side: LinkSide::B,
-                          link: link_rc,
-                          pos: w,
-                      }))
+            side: LinkSide::B,
+            link: link_rc,
+            pos: w,
+        }))
     }
 }
 
@@ -299,34 +304,33 @@ impl Visible for Rc<RefCell<Frame>> {
             let horizontal = choose_drag_mode(q.x, s2.width);
             let vertical = choose_drag_mode(q.y, s2.height);
             let name = if horizontal == DragMode::Drag && vertical == DragMode::Drag {
-                    "Move"
-                } else {
-                    "Resize"
-                }
-                .to_string();
+                "Move"
+            } else {
+                "Resize"
+            }.to_string();
             Some(Menu {
-                     entries: vec![Entry {
-                                       name: name,
-                                       color: None,
-                                       shortcuts: vec!["LMB".to_string()],
-                                       action: Box::new(DragFrameAction::new(self,
-                                                                             horizontal,
-                                                                             vertical)),
-                                   },
-                                   Entry {
-                                       name: "Run".to_string(),
-                                       color: None,
-                                       shortcuts: vec!["Space".to_string()],
-                                       action: Box::new(RunAction::new(self)),
-                                   },
-                                   Entry {
-                                       name: "Delete".to_string(),
-                                       color: None,
-                                       shortcuts: vec!["Delete".to_string()],
-                                       action: Box::new(DeleteFrameAction::new(self)),
-                                   }],
-                     color: "#888".to_string(),
-                 })
+                entries: vec![
+                    Entry {
+                        name: name,
+                        color: None,
+                        shortcuts: vec!["LMB".to_string()],
+                        action: Box::new(DragFrameAction::new(self, horizontal, vertical)),
+                    },
+                    Entry {
+                        name: "Run".to_string(),
+                        color: None,
+                        shortcuts: vec!["Space".to_string()],
+                        action: Box::new(RunAction::new(self)),
+                    },
+                    Entry {
+                        name: "Delete".to_string(),
+                        color: None,
+                        shortcuts: vec!["Delete".to_string()],
+                        action: Box::new(DeleteFrameAction::new(self)),
+                    },
+                ],
+                color: "#888".to_string(),
+            })
         } else {
             for param_index in 0..param_count {
                 let frame_param = FrameParam {
@@ -355,11 +359,12 @@ impl RunAction {
 }
 
 impl Action for RunAction {
-    fn start(self: Box<Self>,
-             vm: &mut Vm,
-             d: DisplayPoint,
-             w: WorldPoint)
-             -> Option<Box<TouchReceiver>> {
+    fn start(
+        self: Box<Self>,
+        vm: &mut Vm,
+        d: DisplayPoint,
+        w: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         println!("Running frame!");
         let frame = (*self).frame.upgrade();
         if frame.is_none() {
@@ -371,8 +376,7 @@ impl Action for RunAction {
             return None;
         }
         let blueprint = blueprint.unwrap();
-        let machine = blueprint.borrow().active_machine.upgrade().unwrap();
-        let object = Rc::downgrade(&machine.borrow().get_object(&frame));
+        let object = Rc::downgrade(&blueprint.borrow().get_object(&frame));
         vm.tasks.push_back(object);
         None
     }
@@ -389,11 +393,12 @@ impl AddFrameAction {
 }
 
 impl Action for AddFrameAction {
-    fn start(self: Box<Self>,
-             vm: &mut Vm,
-             d: DisplayPoint,
-             w: WorldPoint)
-             -> Option<Box<TouchReceiver>> {
+    fn start(
+        self: Box<Self>,
+        vm: &mut Vm,
+        d: DisplayPoint,
+        w: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         let blueprint = vm.active_blueprint.upgrade().unwrap();
         let frame = Frame::new(self.typ, &blueprint, true);
         frame.borrow_mut().pos = w;
@@ -413,11 +418,12 @@ impl DeleteFrameAction {
 }
 
 impl Action for DeleteFrameAction {
-    fn start(self: Box<Self>,
-             _: &mut Vm,
-             d: DisplayPoint,
-             w: WorldPoint)
-             -> Option<Box<TouchReceiver>> {
+    fn start(
+        self: Box<Self>,
+        _: &mut Vm,
+        d: DisplayPoint,
+        w: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         println!("Deleting frame!");
         let frame = (*self).frame.upgrade();
         if frame.is_none() {
@@ -427,35 +433,30 @@ impl Action for DeleteFrameAction {
         let blueprint = frame.borrow().blueprint.upgrade();
         if let Some(blueprint) = blueprint {
             let mut blueprint = blueprint.borrow_mut();
-            if let Some((index, _)) = blueprint
-                   .frames
-                   .iter()
-                   .enumerate()
-                   .find(|x| Rc::ptr_eq(x.1, &frame)) {
+            if let Some((index, _)) = blueprint.frames.iter().enumerate().find(|x| {
+                Rc::ptr_eq(x.1, &frame)
+            })
+            {
                 blueprint.frames.swap_remove(index);
 
-                blueprint
-                    .links
-                    .retain(|link_rc| {
-                        fn side_retain(f: &Rc<RefCell<Frame>>, t: &LinkTerminator) -> bool {
-                            match t {
-                                &LinkTerminator::Frame(ref other_frame) => {
-                                    !Rc::ptr_eq(f, other_frame)
-                                }
-                                &LinkTerminator::FrameParam(ref frame_param) => {
-                                    !Rc::ptr_eq(f, &frame_param.frame)
-                                }
-                                _ => true,
+                blueprint.links.retain(|link_rc| {
+                    fn side_retain(f: &Rc<RefCell<Frame>>, t: &LinkTerminator) -> bool {
+                        match t {
+                            &LinkTerminator::Frame(ref other_frame) => !Rc::ptr_eq(f, other_frame),
+                            &LinkTerminator::FrameParam(ref frame_param) => {
+                                !Rc::ptr_eq(f, &frame_param.frame)
                             }
+                            _ => true,
                         }
-                        let link = link_rc.borrow();
-                        return side_retain(&frame, &link.a) && side_retain(&frame, &link.b);
-                    });
+                    }
+                    let link = link_rc.borrow();
+                    return side_retain(&frame, &link.a) && side_retain(&frame, &link.b);
+                });
                 for machine in blueprint.machines.iter() {
                     let mut machine = machine.borrow_mut();
-                    machine
-                        .objects
-                        .retain(|o_rc| !Rc::ptr_eq(&o_rc.borrow().frame, &frame));
+                    machine.objects.retain(|o_rc| {
+                        !Rc::ptr_eq(&o_rc.borrow().frame, &frame)
+                    });
                 }
                 let frame = Rc::try_unwrap(frame).ok().unwrap();
             }
@@ -471,10 +472,11 @@ struct DragFrameAction {
 }
 
 impl DragFrameAction {
-    fn new(frame_rc: &Rc<RefCell<Frame>>,
-           horizontal: DragMode,
-           vertical: DragMode)
-           -> DragFrameAction {
+    fn new(
+        frame_rc: &Rc<RefCell<Frame>>,
+        horizontal: DragMode,
+        vertical: DragMode,
+    ) -> DragFrameAction {
         DragFrameAction {
             frame: Rc::downgrade(frame_rc),
             horizontal: horizontal,
@@ -484,17 +486,18 @@ impl DragFrameAction {
 }
 
 impl Action for DragFrameAction {
-    fn start(self: Box<Self>,
-             _: &mut Vm,
-             d: DisplayPoint,
-             w: WorldPoint)
-             -> Option<Box<TouchReceiver>> {
+    fn start(
+        self: Box<Self>,
+        _: &mut Vm,
+        d: DisplayPoint,
+        w: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         Some(Box::new(DragFrame {
-                          horizontal: self.horizontal,
-                          vertical: self.vertical,
-                          frame: (*self).frame,
-                          pos: w,
-                      }))
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+            frame: (*self).frame,
+            pos: w,
+        }))
     }
 }
 
@@ -521,17 +524,18 @@ const PARAM_RADIUS: f64 = 5.;
 const PARAM_SPACING: f64 = 2.;
 
 impl Frame {
-    fn new(typ: &'static Type,
-           blueprint: &Rc<RefCell<Blueprint>>,
-           global: bool)
-           -> Rc<RefCell<Frame>> {
+    fn new(
+        typ: &'static Type,
+        blueprint: &Rc<RefCell<Blueprint>>,
+        global: bool,
+    ) -> Rc<RefCell<Frame>> {
         let f = Rc::new(RefCell::new(Frame {
-                                         blueprint: Rc::downgrade(blueprint),
-                                         typ: typ,
-                                         pos: WorldPoint::zero(),
-                                         size: WorldSize::new(10., 10.),
-                                         global: global,
-                                     }));
+            blueprint: Rc::downgrade(blueprint),
+            typ: typ,
+            pos: WorldPoint::zero(),
+            size: WorldSize::new(10., 10.),
+            global: global,
+        }));
         blueprint.borrow_mut().frames.push(f.clone());
         for machine_cell in blueprint.borrow().machines.iter() {
             let mut machine = machine_cell.borrow_mut();
@@ -581,7 +585,10 @@ impl Serialize for FrameParam {
         let frame = self.frame.borrow();
         let blueprint = frame.blueprint.upgrade().unwrap();
         let blueprint = blueprint.borrow();
-        s.serialize_field("frame", &blueprint.frame_index(&self.frame))?;
+        s.serialize_field(
+            "frame",
+            &blueprint.frame_index(&self.frame),
+        )?;
         s.serialize_field("param_index", &self.param_index)?;
         s.end()
     }
@@ -598,20 +605,32 @@ impl Serialize for LinkTerminator {
         use std::ops::Deref;
         match self {
             &LinkTerminator::Point(ref point) => {
-                let mut s = serializer
-                    .serialize_tuple_variant("LinkTerminator", 2, "Point", 1)?;
+                let mut s = serializer.serialize_tuple_variant(
+                    "LinkTerminator",
+                    2,
+                    "Point",
+                    1,
+                )?;
                 s.serialize_field(&SerializablePoint2D(point))?;
                 s.end()
             }
             &LinkTerminator::Frame(ref frame_rc) => {
-                let mut s = serializer
-                    .serialize_tuple_variant("LinkTerminator", 0, "Frame", 1)?;
+                let mut s = serializer.serialize_tuple_variant(
+                    "LinkTerminator",
+                    0,
+                    "Frame",
+                    1,
+                )?;
                 s.serialize_field(&SerializeFrameIndex(frame_rc))?;
                 s.end()
             }
             &LinkTerminator::FrameParam(ref frame_param) => {
-                let mut s = serializer
-                    .serialize_tuple_variant("LinkTerminator", 1, "FrameParam", 1)?;
+                let mut s = serializer.serialize_tuple_variant(
+                    "LinkTerminator",
+                    1,
+                    "FrameParam",
+                    1,
+                )?;
                 s.serialize_field(frame_param)?;
                 s.end()
             }
@@ -685,14 +704,16 @@ impl Visible for Rc<RefCell<Link>> {
         let a = PI * 0.5 * (1.0 - tanh);
 
         c.beginPath();
-        c.ellipse(length - l,
-                  0.,
-                  r,
-                  ARROW_WIDTH,
-                  0.,
-                  PI * 0.5 - a,
-                  PI * 1.5 + a,
-                  false);
+        c.ellipse(
+            length - l,
+            0.,
+            r,
+            ARROW_WIDTH,
+            0.,
+            PI * 0.5 - a,
+            PI * 1.5 + a,
+            false,
+        );
         c.lineTo(length, 0.);
         c.fill();
 
@@ -725,7 +746,10 @@ impl<'a> Serialize for SerializeFrameIndex<'a> {
 impl Serialize for Object {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut s = serializer.serialize_struct("Object", 3)?;
-        s.serialize_field("frame", &SerializeFrameIndex(&self.frame))?;
+        s.serialize_field(
+            "frame",
+            &SerializeFrameIndex(&self.frame),
+        )?;
         s.serialize_field("execute", &self.execute);
         let data = (self.frame.borrow().typ.serialize)(self);
         s.serialize_field("data", &data);
@@ -762,9 +786,11 @@ static text_type: Type = Type {
         let font_metrics = canvas.get_font_metrics(6.);
 
         canvas.fillStyle("black");
-        canvas.fillText(o.data.downcast_ref::<String>().unwrap(),
-                        2.,
-                        2. + font_metrics.ascent as f64);
+        canvas.fillText(
+            o.data.downcast_ref::<String>().unwrap(),
+            2.,
+            2. + font_metrics.ascent as f64,
+        );
     },
     serialize: &|o: &Object| -> Vec<u8> {
         o.data
@@ -790,26 +816,28 @@ static empty_type: Type = Type {
 
 static process_type: Type = Type {
     name: "Process",
-    parameters: &[Parameter {
-         name: "Command",
-         runnable: false,
-         output: false,
-     },
-     Parameter {
-         name: "Arguments",
-         runnable: false,
-         output: false,
-     },
-     Parameter {
-         name: "Input",
-         runnable: false,
-         output: false,
-     },
-     Parameter {
-         name: "Output",
-         runnable: false,
-         output: true,
-     }],
+    parameters: &[
+        Parameter {
+            name: "Command",
+            runnable: false,
+            output: false,
+        },
+        Parameter {
+            name: "Arguments",
+            runnable: false,
+            output: false,
+        },
+        Parameter {
+            name: "Input",
+            runnable: false,
+            output: false,
+        },
+        Parameter {
+            name: "Output",
+            runnable: false,
+            output: true,
+        },
+    ],
     init: &|o: &mut Object| {},
     run: &|args: RunArgs| if let Some(command_rc) = args[0].get(0) {
         let command = command_rc.borrow();
@@ -841,12 +869,14 @@ static process_type: Type = Type {
     deserialize: &|o: &mut Object, data: Vec<u8>| {},
 };
 
-fn new_text(blueprint_rc: &Rc<RefCell<Blueprint>>,
-            text: &str,
-            x: f64,
-            y: f64,
-            width: f64,
-            height: f64) {
+fn new_text(
+    blueprint_rc: &Rc<RefCell<Blueprint>>,
+    text: &str,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) {
 
     let frame_rc = Frame::new(&text_type, &blueprint_rc, true);
     let mut frame = frame_rc.borrow_mut();

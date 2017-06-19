@@ -25,12 +25,29 @@ impl Serialize for Machine {
 impl Machine {
     pub fn new(blueprint: &Rc<RefCell<Blueprint>>) -> Rc<RefCell<Machine>> {
         // TODO: initialize objects
-        let ret = Rc::new(RefCell::new(Machine {
+        let machine = Rc::new(RefCell::new(Machine {
             blueprint: Rc::downgrade(blueprint),
             objects: Vec::new(),
         }));
-        blueprint.borrow_mut().machines.push(ret.clone());
-        return ret;
+
+        for frame_rc in blueprint.borrow().frames.iter() {
+            let frame = frame_rc.borrow();
+            if frame.global {
+                continue;
+            }
+            let mut object = Object {
+                machine: Rc::downgrade(&machine),
+                frame: frame_rc.clone(),
+                execute: false,
+                running: false,
+                data: Box::new(()),
+            };
+            (frame.typ.init)(&mut object);
+            machine.borrow_mut().push(object);
+        }
+
+        blueprint.borrow_mut().machines.push(machine.clone());
+        return machine;
     }
 
     pub fn load_json(this: &Rc<RefCell<Machine>>, json: &serde_json::Value) {

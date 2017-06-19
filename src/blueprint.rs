@@ -25,19 +25,29 @@ use self::serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct};
 
 impl Serialize for Blueprint {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer
+    where
+        S: Serializer,
     {
         let mut serializer = serializer.serialize_struct("Blueprint", 4)?;
         serializer.serialize_field("name", &self.name)?;
-        serializer
-            .serialize_field("frames", &SerializableVec(&self.frames))?;
-        serializer
-            .serialize_field("links", &SerializableVec(&self.links))?;
-        serializer
-            .serialize_field("machines", &SerializableVec(&self.machines))?;
-        serializer
-            .serialize_field("active_machine",
-                             &self.machine_index(&self.active_machine.upgrade().unwrap()))?;
+        serializer.serialize_field(
+            "frames",
+            &SerializableVec(&self.frames),
+        )?;
+        serializer.serialize_field(
+            "links",
+            &SerializableVec(&self.links),
+        )?;
+        serializer.serialize_field(
+            "machines",
+            &SerializableVec(&self.machines),
+        )?;
+        serializer.serialize_field(
+            "active_machine",
+            &self.machine_index(
+                &self.active_machine.upgrade().unwrap(),
+            ),
+        )?;
         serializer.end()
         /*
         use std::ops::Deref;
@@ -55,13 +65,13 @@ impl Serialize for Blueprint {
 impl Blueprint {
     pub fn new(vm: &Rc<RefCell<Vm>>) -> Rc<RefCell<Blueprint>> {
         let bp = Rc::new(RefCell::new(Blueprint {
-                                          vm: Rc::downgrade(vm),
-                                          name: String::new(),
-                                          frames: Vec::new(),
-                                          links: Vec::new(),
-                                          machines: Vec::new(),
-                                          active_machine: Weak::new(),
-                                      }));
+            vm: Rc::downgrade(vm),
+            name: String::new(),
+            frames: Vec::new(),
+            links: Vec::new(),
+            machines: Vec::new(),
+            active_machine: Weak::new(),
+        }));
         vm.borrow_mut().blueprints.push(bp.clone());
         return bp;
     }
@@ -77,11 +87,15 @@ impl Blueprint {
             let typ = vm.types.iter().find(|typ| typ.name == type_name).unwrap();
             let frame = Frame::new(typ, &blueprint_rc, global);
             let pos_array = frame_json.get("pos").unwrap().as_array().unwrap();
-            frame.borrow_mut().pos = WorldPoint::new(pos_array[0].as_f64().unwrap(),
-                                                     pos_array[1].as_f64().unwrap());
+            frame.borrow_mut().pos = WorldPoint::new(
+                pos_array[0].as_f64().unwrap(),
+                pos_array[1].as_f64().unwrap(),
+            );
             let size_array = frame_json.get("size").unwrap().as_array().unwrap();
-            frame.borrow_mut().size = WorldSize::new(size_array[0].as_f64().unwrap(),
-                                                     size_array[1].as_f64().unwrap());
+            frame.borrow_mut().size = WorldSize::new(
+                size_array[0].as_f64().unwrap(),
+                size_array[1].as_f64().unwrap(),
+            );
         }
 
         let name = json.get("name").unwrap().as_str().unwrap();
@@ -91,10 +105,11 @@ impl Blueprint {
         for link_json in links.iter() {
 
             use LinkTerminator;
-            fn parse_terminator(blueprint: &Blueprint,
-                                link_json: &serde_json::Value,
-                                side: &str)
-                                -> LinkTerminator {
+            fn parse_terminator(
+                blueprint: &Blueprint,
+                link_json: &serde_json::Value,
+                side: &str,
+            ) -> LinkTerminator {
                 let a = link_json.get(side).unwrap().as_object().unwrap();
                 let terminator_type = a.keys().next().unwrap();
                 use FrameParam;
@@ -111,10 +126,9 @@ impl Blueprint {
                         let param_index =
                             frame_param.get("param_index").unwrap().as_u64().unwrap() as usize;
                         LinkTerminator::FrameParam(FrameParam {
-                                                       frame: blueprint.frames[frame_idx as usize]
-                                                           .clone(),
-                                                       param_index: param_index,
-                                                   })
+                            frame: blueprint.frames[frame_idx as usize].clone(),
+                            param_index: param_index,
+                        })
                     }
                     _ => panic!("Unknown LinkTerminator type"),
                 }
@@ -148,17 +162,6 @@ impl Blueprint {
         self.active_machine = Rc::downgrade(machine);
     }
 
-
-    /*
-    Blueprint is a list of several elements drawn in a "draw-order".
-    On mouse movement, the same elements are considered in a reverse-draw-order.
-    Those elements are:
-    - links
-    - parameters
-    - frames (objects)
-    - UI toggles
-     */
-
     pub fn with_object<F: FnMut(&mut Object)>(&self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
         let machine_rc = if frame_rc.borrow().global {
             self.machines[0].clone()
@@ -167,6 +170,17 @@ impl Blueprint {
         };
         machine_rc.borrow_mut().with_object(frame_rc, f);
     }
+    
+    pub fn get_object(&self, frame_rc: &Rc<RefCell<Frame>>) -> Rc<RefCell<Object>> {
+        let machine_rc = if frame_rc.borrow().global {
+            self.machines[0].clone()
+        } else {
+            self.active_machine.upgrade().unwrap()
+        };
+        let object = machine_rc.borrow().get_object(&frame_rc);
+        return object
+    }
+
 
     pub fn query_frame(&self, p: WorldPoint) -> Option<Rc<RefCell<Frame>>> {
         self.frames
