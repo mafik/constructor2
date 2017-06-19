@@ -2,8 +2,10 @@ extern crate websocket;
 extern crate serde_json;
 
 use std::net::TcpStream;
+use std::sync::mpsc;
 
 pub enum Event {
+    Quit(mpsc::Sender<i32>),
     NewWebsocketClient(websocket::Client<TcpStream>),
     WebsocketDisconnected(i64),
     RenderingReady, // sent when next frame is ready for commands

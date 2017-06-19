@@ -9,8 +9,9 @@ use std::cell::RefCell;
 use std::collections::{HashSet, HashMap, VecDeque};
 use std::sync::mpsc;
 use std::net::TcpStream;
-use std::time::Instant;
+use std::time;
 use std::thread;
+use std::process;
 
 use blueprint::*;
 use json_canvas::*;
@@ -56,8 +57,9 @@ pub struct Vm {
     pub active_blueprint: Weak<RefCell<Blueprint>>,
 
     pub tasks: VecDeque<Weak<RefCell<Object>>>,
+    pub types: Vec<&'static Type>,
 
-    types: Vec<&'static Type>,
+    is_running: bool,
 
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
@@ -69,7 +71,7 @@ pub struct Vm {
     display: Display,
     center: Rc<RefCell<WorldPoint>>,
     mouse: PixelPoint,
-    last_update: Instant,
+    last_update: time::Instant,
     mouse_handler: Option<Box<TouchReceiver>>,
     menus: Vec<Weak<VisibleMenu>>,
     zoom: ScaleFactor<f64, DisplayMillimetreSpace, WorldMillimetreSpace>,
@@ -77,19 +79,7 @@ pub struct Vm {
 
 use self::serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct};
 
-struct Blueprints<'a>(&'a Vec<Rc<RefCell<Blueprint>>>);
-
-impl <'a> Serialize for Blueprints<'a> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer {
-        use std::ops::Deref;
-        let mut blueprint_seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for (i, b) in self.0.iter().enumerate() {
-            blueprint_seq.serialize_element(b.borrow().deref())?;
-        }
-        blueprint_seq.end()
-    }
-}
+use SerializableVec;
 
 struct Tasks<'a> (&'a Vm);
 
@@ -120,7 +110,7 @@ impl Serialize for Vm {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where S: Serializer {
         let mut serializer = serializer.serialize_struct("Vm", 3)?;
-        serializer.serialize_field("blueprints", &Blueprints(&self.blueprints))?;
+        serializer.serialize_field("blueprints", &SerializableVec(&self.blueprints))?;
         let active_blueprint = self.active_blueprint.upgrade().unwrap();
         let active_blueprint = self.blueprint_index(&active_blueprint);
         serializer.serialize_field("active_blueprint", &active_blueprint);
@@ -128,6 +118,11 @@ impl Serialize for Vm {
         serializer.end()
     }
 }
+
+use std::fmt;
+use std::error::Error;
+
+struct VmVisitor;
 
 impl Vm {
     fn blueprint_index(&self, blueprint: &Rc<RefCell<Blueprint>>) -> u32 {
@@ -153,7 +148,7 @@ impl Vm {
     fn mouse_world(&self) -> WorldPoint {
         self.display.to_millimetre(self.mouse) * self.zoom - *self.center.borrow()
     }
-    pub fn new() -> Vm {
+    pub fn new() -> Rc<RefCell<Vm>> {
         let font_collection = rusttype::FontCollection::from_bytes(FONT);
         let font = Rc::new(font_collection.into_font().unwrap());
 
@@ -174,28 +169,65 @@ impl Vm {
             }
         });
 
-        Vm {
-            blueprints: Vec::new(),
-            active_blueprint: Weak::new(),
-            types: vec![&process_type, &text_type, &empty_type],
-            tasks: VecDeque::new(),
-            rx: rx,
-            tx: tx,
-            center: Rc::new(RefCell::new(WorldPoint::new(0., 0.))),
-            display: Display {
-                size: PixelPoint::new(1024., 768.),
-                dpi: 96.,
-                eye_distance_meters: 0.5,
-            },
-            websocket_clients: HashMap::new(),
-            font: font,
-            client_counter: 0,
-            mouse: PixelPoint::new(0., 0.),
-            last_update: Instant::now(),
-            mouse_handler: None,
-            menus: Vec::new(),
-            zoom: ScaleFactor::new(1.0),
+        Rc::new(RefCell::new(Vm {
+                    blueprints: Vec::new(),
+                    active_blueprint: Weak::new(),
+                    types: vec![&process_type, &text_type, &empty_type],
+                    tasks: VecDeque::new(),
+                    is_running: true,
+                    rx: rx,
+                    tx: tx,
+                    center: Rc::new(RefCell::new(WorldPoint::new(0., 0.))),
+                    display: Display {
+                        size: PixelPoint::new(1024., 768.),
+                        dpi: 96.,
+                        eye_distance_meters: 0.5,
+                    },
+                    websocket_clients: HashMap::new(),
+                    font: font,
+                    client_counter: 0,
+                    mouse: PixelPoint::new(0., 0.),
+                    last_update: time::Instant::now(),
+                    mouse_handler: None,
+                    menus: Vec::new(),
+                    zoom: ScaleFactor::new(1.0),
+        }))
+    }
+
+    pub fn activate(&mut self, blueprint: &Rc<RefCell<Blueprint>>) {
+        self.active_blueprint = Rc::downgrade(blueprint);
+    }
+
+    pub fn load_json(this: &Rc<RefCell<Vm>>) -> Result<(), Box<Error>> {
+        use std::fs::File;
+        use std::io::Read;
+        let file = File::open("vm.json")?;
+        let value: serde_json::Value = serde_json::from_reader(file)?;
+        let blueprints = value.get("blueprints").ok_or("No blueprints")?;
+        let blueprints = blueprints.as_array().ok_or("Blueprints is not an array")?;
+        for blueprint in blueprints.iter() {
+            let mybp = Blueprint::new(this);
+            Blueprint::load_json(&mybp, blueprint);
         }
+        let active_blueprint = value.get("active_blueprint").unwrap().as_i64().unwrap();
+        let weak_bp = Rc::downgrade(&this.borrow().blueprints[active_blueprint as usize]);
+        this.borrow_mut().active_blueprint = weak_bp;
+        let tasks = value.get("tasks").ok_or("No tasks")?;
+        let tasks = tasks.as_array().ok_or("Tasks is not an array")?;
+        for task in tasks.iter() {
+            // TODO
+        }
+        let mut contents = String::new();
+        let mut file = File::open("vm.json")?;
+        file.read_to_string(&mut contents)?;
+        println!("File contents:");
+        println!("{}", contents);
+        use std::ops::Deref;
+        let buffer = serde_json::to_string(this.borrow().deref()).ok().unwrap();
+        println!("Loaded contents:");
+        println!("{}", buffer);
+
+        Ok(())
     }
 
     fn update_clients(&mut self) {
@@ -206,7 +238,7 @@ impl Vm {
         for (id, writer) in &mut self.websocket_clients {
             writer.send_message(&message);
         }
-        self.last_update = Instant::now();
+        self.last_update = time::Instant::now();
     }
 
     fn draw(&mut self, c: &mut Canvas) {
@@ -310,6 +342,11 @@ impl Vm {
 
     fn process_event(&mut self, event: Event) {
         match event {
+            Event::Quit(mut over) => {
+                println!("VM: received Quit");
+                over.send(0).unwrap();
+                println!("VM: sent response");
+            },
                 Event::NewWebsocketClient(mut client) => {
                     let (mut websocket_reader, websocket_writer) = client.split().unwrap();
                     let client_number = self.client_counter;
@@ -433,6 +470,15 @@ impl Vm {
                 }
                 Event::KeyDown { code: code, key: key } => {
                     println!("Pressed key {}, code {}", key, code);
+                    if code == "Insert" {
+                        use std::fs::File;
+                        use std::io::Write;
+                        let mut file = File::create("vm.json").ok().unwrap();
+                        let buffer = serde_json::to_string(self).ok().unwrap();
+                        file.write_all(buffer.as_ref()).ok().unwrap();
+                        println!("VM state saved");
+                        return;
+                    }
                     if self.mouse_handler.is_some() {
                         return;
                     }
@@ -532,14 +578,17 @@ impl Vm {
         }
     }
 
-    pub fn run(mut self) {
-        loop {
+    pub fn run(&mut self) {
+        while self.is_running {
             if let Ok(event) = self.rx.try_recv() {
                 self.process_event(event);
             } else if let Some(task) = self.tasks.pop_front() {
                 self.process_task(task);
             } else if let Ok(event) = self.rx.recv() {
                 self.process_event(event);
+            } else {
+                println!("MAIN: Breaking main loop");
+                break;
             }
         }
     }

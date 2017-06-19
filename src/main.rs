@@ -1,13 +1,14 @@
 /*
 TODOs:
-- Activate the right option (instead of the first one) (DONE)
-- Add options for creating new frames (text, process) (DONE)
-- Implement Serialize for Blueprint
-- Implement Serialize for Frame
-- Implement Serialize for Machine
-- Implement Serialize for Object
-- Store VM state on Ctrl+C
-- Restore VM state upon loading
+- Implement Serialize for Frame (DONE)
+- Implement Serialize for Machine (DONE)
+- Implement Serialize for Blueprint (DONE)
+- Implement Serialize for Object (DONE)
+- Store VM state on Ctrl+C (DONE)
+- Restore VM state upon loading (DONE)
+- Restore the list of tasks
+- Restore the list of frames
+- Restore the list of links
 
 On hold:
 - Cleanups - a - lot
@@ -22,6 +23,7 @@ On hold:
 
 extern crate hyper;
 extern crate euclid;
+extern crate serde;
 extern crate serde_json;
 
 mod http;
@@ -52,6 +54,49 @@ use machine::*;
 use blueprint::*;
 use vm::*;
 use menu::*;
+
+use serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct, SerializeTuple, SerializeTupleVariant};
+
+struct SerializableVec<'a, T: 'a + Serialize>(&'a Vec<Rc<RefCell<T>>>);
+
+impl <'a, T: Serialize> Serialize for SerializableVec<'a, T> {    
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer {
+        use std::ops::Deref;
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (i, b) in self.0.iter().enumerate() {
+            seq.serialize_element(b.borrow().deref())?;
+        }
+        seq.end()
+
+    }
+}
+
+struct SerializablePoint2D<'a, T: 'a>(&'a TypedPoint2D<f64, T>);
+
+impl <'a, T: 'a> Serialize for SerializablePoint2D<'a, T> {    
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer {
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element(&self.0.x)?;
+        tup.serialize_element(&self.0.y)?;
+        tup.end()
+    }
+}
+
+struct SerializableSize2D<'a, T: 'a>(&'a TypedSize2D<f64, T>);
+
+impl <'a, T: 'a> Serialize for SerializableSize2D<'a, T> {    
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: Serializer {
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element(&self.0.width)?;
+        tup.serialize_element(&self.0.height)?;
+        tup.end()
+    }
+}
+
+
 
 pub struct DisplayMillimetreSpace; // milimeters @ half meter
 pub struct WorldMillimetreSpace; // above * viewport zoom + viewport offset
@@ -457,6 +502,17 @@ pub struct Frame {
     global: bool,
 }
 
+impl Serialize for Frame {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("Frame", 4)?;
+        s.serialize_field("type", &self.typ.name)?;
+        s.serialize_field("pos", &SerializablePoint2D(&self.pos))?;
+        s.serialize_field("size", &SerializableSize2D(&self.size))?;
+        s.serialize_field("global", &self.global)?;
+        s.end()
+    }
+}
+
 const PARAM_RADIUS: f64 = 5.;
 const PARAM_SPACING: f64 = 2.;
 
@@ -473,7 +529,9 @@ impl Frame {
                                          global: global,
                                      }));
         blueprint.borrow_mut().frames.push(f.clone());
+        println!("Adding new frame");
         for machine_cell in blueprint.borrow().machines.iter() {
+            println!("Adding object...");
             let mut machine = machine_cell.borrow_mut();
             let mut object = Object {
                 machine: Rc::downgrade(machine_cell),
@@ -514,10 +572,46 @@ impl Frame {
     }
 }
 
+impl Serialize for FrameParam {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use std::ops::Deref;
+        let mut s = serializer.serialize_struct("FrameParam", 2)?;
+        let frame = self.frame.borrow();
+        let blueprint = frame.blueprint.upgrade().unwrap();
+        let blueprint = blueprint.borrow();
+        s.serialize_field("frame", &blueprint.frame_index(&self.frame))?;
+        s.serialize_field("param_index", &self.param_index)?;
+        s.end()
+    }
+}
+
 pub enum LinkTerminator {
     Frame(Rc<RefCell<Frame>>),
     FrameParam(FrameParam),
     Point(WorldPoint),
+}
+
+impl Serialize for LinkTerminator {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use std::ops::Deref;
+        match self {
+            &LinkTerminator::Point(ref point) => {
+                let mut s = serializer.serialize_tuple_variant("LinkTerminator", 2, "Point", 1)?;
+                s.serialize_field(&SerializablePoint2D(point))?;
+                s.end()
+            },
+            &LinkTerminator::Frame(ref frame_rc) => {
+                let mut s = serializer.serialize_tuple_variant("LinkTerminator", 0, "Frame", 1)?;
+                s.serialize_field(&SerializeFrameIndex(frame_rc))?;
+                s.end()
+            },
+            &LinkTerminator::FrameParam(ref frame_param) => {
+                let mut s = serializer.serialize_tuple_variant("LinkTerminator", 1, "FrameParam", 1)?;
+                s.serialize_field(frame_param)?;
+                s.end()
+            },
+        }
+    }
 }
 
 impl LinkTerminator {
@@ -541,6 +635,16 @@ pub struct Link {
     a: LinkTerminator,
     b: LinkTerminator,
     order: i32,
+}
+
+impl Serialize for Link {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("Link", 3)?;
+        s.serialize_field("a", &self.a)?;
+        s.serialize_field("b", &self.b)?;
+        s.serialize_field("order", &self.order)?;
+        s.end()
+    }
 }
 
 impl Visible for Rc<RefCell<Link>> {
@@ -602,6 +706,28 @@ pub struct Object {
     data: Box<Any>,
 }
 
+struct SerializeFrameIndex<'a>(&'a Rc<RefCell<Frame>>);
+
+impl <'a> Serialize for SerializeFrameIndex<'a> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let frame = self.0.borrow();
+        let blueprint = frame.blueprint.upgrade().unwrap();
+        let blueprint = blueprint.borrow();
+        serializer.serialize_some(&blueprint.frame_index(self.0))
+    }
+}
+
+impl Serialize for Object {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("Object", 3)?;
+        s.serialize_field("frame", &SerializeFrameIndex(&self.frame))?;
+        s.serialize_field("execute", &self.execute);
+        let data = (self.frame.borrow().typ.serialize)(self);
+        s.serialize_field("data", &data);
+        s.end()
+    }
+}
+
 type ObjectCell = Rc<RefCell<Object>>;
 type RunArg = Vec<ObjectCell>;
 type RunArgs = Vec<RunArg>;
@@ -612,12 +738,14 @@ struct Parameter {
     output: bool,
 }
 
-struct Type {
+pub struct Type {
     name: &'static str,
     parameters: &'static [Parameter],
     init: &'static (Fn(&mut Object) + Sync),
     run: &'static (Fn(RunArgs) + Sync),
     draw: &'static (Fn(&Object, &mut Canvas) + Sync),
+    serialize: &'static (Fn(&Object) -> Vec<u8> + Sync),
+    deserialize: &'static (Fn(&mut Object, Vec<u8>) + Sync),
 }
 
 static text_type: Type = Type {
@@ -633,6 +761,12 @@ static text_type: Type = Type {
                         2.,
                         2. + font_metrics.ascent as f64);
     },
+    serialize: &|o: &Object| -> Vec<u8> {
+        o.data.downcast_ref::<String>().unwrap().clone().into_bytes()
+    },
+    deserialize: &|o: &mut Object, data: Vec<u8>| {
+        o.data = Box::new(String::from_utf8(data).ok().unwrap());
+    },
 };
 
 static empty_type: Type = Type {
@@ -641,6 +775,10 @@ static empty_type: Type = Type {
     init: &|o: &mut Object| {},
     run: &|args: RunArgs| {},
     draw: &|o: &Object, canvas: &mut Canvas| {},
+    serialize: &|o: &Object| -> Vec<u8> {
+        Vec::new()
+    },
+    deserialize: &|o: &mut Object, data: Vec<u8>| {},
 };
 
 static process_type: Type = Type {
@@ -692,6 +830,10 @@ static process_type: Type = Type {
         println!("Missing Command argument!");
     },
     draw: &|o: &Object, canvas: &mut Canvas| {},
+    serialize: &|o: &Object| -> Vec<u8> {
+        Vec::new()
+    },
+    deserialize: &|o: &mut Object, data: Vec<u8>| {},
 };
 
 fn new_text(blueprint_rc: &Rc<RefCell<Blueprint>>,
@@ -713,18 +855,20 @@ fn new_text(blueprint_rc: &Rc<RefCell<Blueprint>>,
 
 fn main() {
     let mut vm = Vm::new();
-    let blueprint = Blueprint::new(&mut vm, "Default".to_string(), true);
-    Machine::new(&blueprint, true);
-    new_text(&blueprint, "/bin/ls", -20., -20., 50., 10.);
-    new_text(&blueprint, "/home/mrogalski", -20., 20., 50., 10.);
-
-    {
-        let process_frame = Frame::new(&process_type, &blueprint, true);
-        process_frame.borrow_mut().pos.x += 20.;
+    match Vm::load_json(&vm) {
+        Result::Ok(_) => (),
+        Result::Err(_) => {
+            let blueprint = Blueprint::new(&vm);
+            blueprint.borrow_mut().rename("Default".to_string());
+            vm.borrow_mut().activate(&blueprint);
+            let machine = Machine::new(&blueprint);
+            blueprint.borrow_mut().activate(&machine);
+            new_text(&blueprint, "/bin/ls", -20., -20., 50., 10.);
+            new_text(&blueprint, "/home/mrogalski", -20., 20., 50., 10.);
+            let process_frame = Frame::new(&process_type, &blueprint, true);
+            process_frame.borrow_mut().pos.x += 20.;
+        }
     }
 
-    let buffer = serde_json::to_string(&vm).ok().unwrap();
-    println!("{}", buffer);
-
-    vm.run();
+    vm.borrow_mut().run();
 }
