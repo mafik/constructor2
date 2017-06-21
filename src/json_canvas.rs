@@ -1,18 +1,18 @@
 extern crate serde_json;
 extern crate rusttype;
 
-use std::rc::Rc;
+use std::sync::Arc;
 use canvas::Canvas;
 use self::rusttype::Font;
 
 pub struct JsonCanvas<'a> {
     count: i32,
     cmds: String,
-    font: Rc<Font<'a>>,
+    font: Arc<Font<'a>>,
 }
 
 impl<'a> JsonCanvas<'a> {
-    pub fn new(font: Rc<Font<'a>>) -> JsonCanvas<'a> {
+    pub fn new(font: Arc<Font<'a>>) -> JsonCanvas<'a> {
         JsonCanvas {
             count: 0,
             cmds: "[".to_string(),
@@ -34,43 +34,71 @@ impl<'a> JsonCanvas<'a> {
 
 impl<'a> Canvas for JsonCanvas<'a> {
     fn get_font_metrics(&self, scale: f64) -> rusttype::VMetrics {
-        self.font
-            .v_metrics(rusttype::Scale {
-                           x: scale as f32,
-                           y: scale as f32,
-                       })
+        self.font.v_metrics(rusttype::Scale {
+            x: scale as f32,
+            y: scale as f32,
+        })
     }
     fn translate(&mut self, x: f64, y: f64) -> &mut Canvas {
         self.append(format!(r#"{{"type":"translate","x":{},"y":{}}}"#, x, y))
     }
     fn fillText(&mut self, text: &str, x: f64, y: f64) -> &mut Canvas {
         let t = serde_json::to_string(text).unwrap();
-        self.append(format!(r#"{{"type":"fillText","text":{},"x":{},"y":{}}}"#, t, x, y))
+        self.append(format!(
+            r#"{{"type":"fillText","text":{},"x":{},"y":{}}}"#,
+            t,
+            x,
+            y
+        ))
     }
     fn fillRect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"fillRect","x":{},"y":{},"w":{},"h":{}}}"#,
-                            x,
-                            y,
-                            w,
-                            h))
+        self.append(format!(
+            r#"{{"type":"fillRect","x":{},"y":{},"w":{},"h":{}}}"#,
+            x,
+            y,
+            w,
+            h
+        ))
     }
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"rect","x":{},"y":{},"w":{},"h":{}}}"#,
-                            x,
-                            y,
-                            w,
-                            h))
+        self.append(format!(
+            r#"{{"type":"rect","x":{},"y":{},"w":{},"h":{}}}"#,
+            x,
+            y,
+            w,
+            h
+        ))
     }
-    fn arc(&mut self, x: f64, y: f64, r: f64, alpha: f64, beta: f64, clockwise: bool) -> &mut Canvas {
-        self.append(format!(r#"{{"type":"arc","x":{},"y":{},"r":{},"alpha":{},"beta":{},"clockwise":{}}}"#,
-                            x,
-                            y,
-                            r,
-                            alpha,
-                            beta,
-                            clockwise))
+    fn arc(
+        &mut self,
+        x: f64,
+        y: f64,
+        r: f64,
+        alpha: f64,
+        beta: f64,
+        clockwise: bool,
+    ) -> &mut Canvas {
+        self.append(format!(
+            r#"{{"type":"arc","x":{},"y":{},"r":{},"alpha":{},"beta":{},"clockwise":{}}}"#,
+            x,
+            y,
+            r,
+            alpha,
+            beta,
+            clockwise
+        ))
     }
-    fn ellipse(&mut self, x: f64, y: f64, rx: f64, ry: f64, rotation: f64, alpha: f64, beta: f64, anticlockwise: bool) -> &mut Canvas {
+    fn ellipse(
+        &mut self,
+        x: f64,
+        y: f64,
+        rx: f64,
+        ry: f64,
+        rotation: f64,
+        alpha: f64,
+        beta: f64,
+        anticlockwise: bool,
+    ) -> &mut Canvas {
         self.append(format!(r#"{{"type":"ellipse","x":{},"y":{},"rx":{},"ry":{},"rotation":{},"alpha":{},"beta":{},"anticlockwise":{}}}"#,
                             x,
                             y,
@@ -151,20 +179,26 @@ mod tests {
 
     #[test]
     fn translate() {
-        assert_eq!(JsonCanvas::new().translate(-1., 1.).serialize(),
-                   r#"[{"type":"translate","x":-1,"y":1}]"#);
+        assert_eq!(
+            JsonCanvas::new().translate(-1., 1.).serialize(),
+            r#"[{"type":"translate","x":-1,"y":1}]"#
+        );
     }
 
     #[test]
     fn fillText() {
-        assert_eq!(JsonCanvas::new().fillText("a b c", 1., 2.).serialize(),
-                   r#"[{"type":"fillText","text":"a b c","x":1,"y":2}]"#);
+        assert_eq!(
+            JsonCanvas::new().fillText("a b c", 1., 2.).serialize(),
+            r#"[{"type":"fillText","text":"a b c","x":1,"y":2}]"#
+        );
     }
 
     #[test]
     fn fillText_edge_cases() {
-        assert_eq!(JsonCanvas::new().fillText("\\\"\"\\", 1., 2.).serialize(),
-                   r#"[{"type":"fillText","text":"\\\"\"\\","x":1,"y":2}]"#);
+        assert_eq!(
+            JsonCanvas::new().fillText("\\\"\"\\", 1., 2.).serialize(),
+            r#"[{"type":"fillText","text":"\\\"\"\\","x":1,"y":2}]"#
+        );
     }
 
     //            .fillText(text, x, y)

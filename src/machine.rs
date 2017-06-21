@@ -1,7 +1,7 @@
 //use std::any::Any;
 extern crate serde_json;
 
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::cell::RefCell;
 
 use blueprint::Blueprint;
@@ -10,7 +10,7 @@ use Frame;
 
 pub struct Machine {
     pub blueprint: Weak<RefCell<Blueprint>>,
-    pub objects: Vec<Rc<RefCell<Object>>>,
+    pub objects: Vec<Arc<RefCell<Object>>>,
 }
 
 use serde::ser::{Serialize, Serializer};
@@ -23,10 +23,10 @@ impl Serialize for Machine {
 }
 
 impl Machine {
-    pub fn new(blueprint: &Rc<RefCell<Blueprint>>) -> Rc<RefCell<Machine>> {
+    pub fn new(blueprint: &Arc<RefCell<Blueprint>>) -> Arc<RefCell<Machine>> {
         // TODO: initialize objects
-        let machine = Rc::new(RefCell::new(Machine {
-            blueprint: Rc::downgrade(blueprint),
+        let machine = Arc::new(RefCell::new(Machine {
+            blueprint: Arc::downgrade(blueprint),
             objects: Vec::new(),
         }));
 
@@ -36,10 +36,9 @@ impl Machine {
                 continue;
             }
             let mut object = Object {
-                machine: Rc::downgrade(&machine),
+                machine: Arc::downgrade(&machine),
                 frame: frame_rc.clone(),
                 execute: false,
-                running: false,
                 data: Box::new(()),
             };
             (frame.typ.init)(&mut object);
@@ -50,7 +49,7 @@ impl Machine {
         return machine;
     }
 
-    pub fn load_json(this: &Rc<RefCell<Machine>>, json: &serde_json::Value) {
+    pub fn load_json(this: &Arc<RefCell<Machine>>, json: &serde_json::Value) {
         let arr = json.as_array().unwrap();
         let mut machine = this.borrow_mut();
         let bp_rc = machine.blueprint.upgrade().unwrap();
@@ -61,10 +60,9 @@ impl Machine {
             let typ = frame_rc.borrow().typ;
             let execute = object_json.get("execute").unwrap().as_bool().unwrap();
             let mut object = Object {
-                machine: Rc::downgrade(this),
+                machine: Arc::downgrade(this),
                 frame: frame_rc,
                 execute: execute,
-                running: false,
                 data: Box::new(()),
             };
             let data = object_json.get("data").unwrap();
@@ -75,21 +73,21 @@ impl Machine {
     }
 
     pub fn push(&mut self, object: Object) {
-        self.objects.push(Rc::new(RefCell::new(object)));
+        self.objects.push(Arc::new(RefCell::new(object)));
     }
 
-    pub fn get_object(&self, frame_rc: &Rc<RefCell<Frame>>) -> Rc<RefCell<Object>> {
+    pub fn get_object(&self, frame_rc: &Arc<RefCell<Frame>>) -> Arc<RefCell<Object>> {
         self.objects
             .iter()
-            .find(|o| Rc::ptr_eq(&o.borrow().frame, frame_rc))
+            .find(|o| Arc::ptr_eq(&o.borrow().frame, frame_rc))
             .unwrap()
             .clone()
     }
 
-    pub fn with_object<F: FnMut(&mut Object)>(&mut self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
+    pub fn with_object<F: FnMut(&mut Object)>(&mut self, frame_rc: &Arc<RefCell<Frame>>, mut f: F) {
         let object = self.objects
             .iter_mut()
-            .find(|o| Rc::ptr_eq(&o.borrow().frame, frame_rc))
+            .find(|o| Arc::ptr_eq(&o.borrow().frame, frame_rc))
             .unwrap();
         use std::ops::DerefMut;
         f(object.borrow_mut().deref_mut());

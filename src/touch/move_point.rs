@@ -1,4 +1,4 @@
-use std::rc::Weak;
+use std::sync::Weak;
 use std::cell::RefCell;
 
 use menu::Action;
@@ -23,11 +23,12 @@ impl MovePointAction {
 }
 
 impl Action for MovePointAction {
-    fn start(self: Box<Self>,
-             vm: &mut Vm,
-             display: DisplayPoint,
-             world: WorldPoint)
-             -> Option<Box<TouchReceiver>> {
+    fn start(
+        self: Box<Self>,
+        vm: &mut Vm,
+        display: DisplayPoint,
+        world: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         let p = self.point.upgrade();
         if p.is_none() {
             None
@@ -35,14 +36,14 @@ impl Action for MovePointAction {
             let p = p.unwrap();
             let stick = self.stick;
             Some(Box::new(MovePointTouchReceiver {
-                              point: self.point,
-                              last_touch: world,
-                              initial_point: if stick {
-                                  Some(p.borrow().clone())
-                              } else {
-                                  None
-                              },
-                          }))
+                point: self.point,
+                last_touch: world,
+                initial_point: if stick {
+                    Some(p.borrow().clone())
+                } else {
+                    None
+                },
+            }))
         }
     }
 }
@@ -54,11 +55,12 @@ pub struct MovePointTouchReceiver {
 }
 
 impl TouchReceiver for MovePointTouchReceiver {
-    fn continue_touch(mut self: Box<Self>,
-                      vm: &mut Vm,
-                      display: DisplayPoint,
-                      world: WorldPoint)
-                      -> Option<Box<TouchReceiver>> {
+    fn continue_touch(
+        mut self: Box<Self>,
+        vm: &mut Vm,
+        display: DisplayPoint,
+        world: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         match self.point.upgrade() {
             Some(point_rc) => {
                 let mut point = point_rc.borrow_mut();

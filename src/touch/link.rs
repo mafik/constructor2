@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 
 use Link;
@@ -16,16 +16,17 @@ pub enum LinkSide {
 
 pub struct DragLink {
     pub side: LinkSide,
-    pub link: Rc<RefCell<Link>>,
+    pub link: Arc<RefCell<Link>>,
     pub pos: WorldPoint,
 }
 
 impl TouchReceiver for DragLink {
-    fn continue_touch(mut self: Box<Self>,
-                      vm: &mut Vm,
-                      display: DisplayPoint,
-                      new_pos: WorldPoint)
-                      -> Option<Box<TouchReceiver>> {
+    fn continue_touch(
+        mut self: Box<Self>,
+        vm: &mut Vm,
+        display: DisplayPoint,
+        new_pos: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         {
             let mut link = self.link.borrow_mut();
             match self.side {
@@ -57,7 +58,7 @@ impl TouchReceiver for DragLink {
                     .links
                     .iter()
                     .enumerate()
-                    .find(|tup| Rc::ptr_eq(&self.link, &tup.1))
+                    .find(|tup| Arc::ptr_eq(&self.link, &tup.1))
                     .unwrap()
                     .0;
                 blueprint.links.swap_remove(i);

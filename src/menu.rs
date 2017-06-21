@@ -1,5 +1,5 @@
 use canvas::Canvas;
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::cell::Cell;
 use vm::Vm;
 use TouchReceiver;
@@ -25,20 +25,20 @@ pub struct Menu {
 }
 
 impl Menu {
-    pub fn activate_shortcut(self,
-                             vm: &mut Vm,
-                             used_shortcut: String,
-                             display: DisplayPoint,
-                             world: WorldPoint)
-                             -> Option<Box<TouchReceiver>> {
+    pub fn activate_shortcut(
+        self,
+        vm: &mut Vm,
+        used_shortcut: String,
+        display: DisplayPoint,
+        world: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         self.entries
             .into_iter()
             .find(|entry| {
-                      entry
-                          .shortcuts
-                          .iter()
-                          .any(|entry_shortcut| &used_shortcut == entry_shortcut)
-                  })
+                entry.shortcuts.iter().any(|entry_shortcut| {
+                    &used_shortcut == entry_shortcut
+                })
+            })
             .and_then(move |entry| entry.action.start(vm, display, world))
     }
 }
@@ -57,16 +57,16 @@ const ANGLE: f64 = PI / 8.;
 const ANGLE_START: f64 = ANGLE * 6.;
 
 impl VisibleMenu {
-    pub fn new(menu: Menu, touch: DisplayPoint) -> Rc<VisibleMenu> {
-        Rc::new(VisibleMenu {
-                    menu: menu,
-                    page: Cell::new(0),
-                    last_touch: Cell::new(touch),
-                })
+    pub fn new(menu: Menu, touch: DisplayPoint) -> Arc<VisibleMenu> {
+        Arc::new(VisibleMenu {
+            menu: menu,
+            page: Cell::new(0),
+            last_touch: Cell::new(touch),
+        })
     }
 }
 
-impl Visible for Rc<VisibleMenu> {
+impl Visible for Arc<VisibleMenu> {
     fn draw(&self, c: &mut Canvas) {
         let pos = self.last_touch.get();
         c.translate(pos.x, pos.y);
@@ -114,12 +114,13 @@ impl Visible for Rc<VisibleMenu> {
     }
 }
 
-impl TouchReceiver for Rc<VisibleMenu> {
-    fn continue_touch(self: Box<Self>,
-                      vm: &mut Vm,
-                      display: DisplayPoint,
-                      world: WorldPoint)
-                      -> Option<Box<TouchReceiver>> {
+impl TouchReceiver for Arc<VisibleMenu> {
+    fn continue_touch(
+        self: Box<Self>,
+        vm: &mut Vm,
+        display: DisplayPoint,
+        world: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         let prev = self.last_touch.get();
         let delta = display - prev;
         let len = delta.x.hypot(delta.y);
@@ -127,7 +128,7 @@ impl TouchReceiver for Rc<VisibleMenu> {
         let a = delta.y.atan2(delta.x);
         if len > FAR {
             let i = ((2. * PI + a - (ANGLE_START - ANGLE)) / (ANGLE * 2.)) as usize % 8;
-            let mut entries = Rc::try_unwrap(*self).ok().unwrap().menu.entries;
+            let mut entries = Arc::try_unwrap(*self).ok().unwrap().menu.entries;
             if i >= entries.len() {
                 None
             } else {

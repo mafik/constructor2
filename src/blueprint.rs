@@ -1,4 +1,4 @@
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::cell::RefCell;
 extern crate serde;
 extern crate serde_json;
@@ -13,11 +13,11 @@ use WorldSize;
 use SerializableVec;
 
 pub struct Blueprint {
-    vm: Weak<RefCell<Vm>>,
+    pub vm: Weak<RefCell<Vm>>,
     pub name: String,
-    pub frames: Vec<Rc<RefCell<Frame>>>,
-    pub links: Vec<Rc<RefCell<Link>>>,
-    pub machines: Vec<Rc<RefCell<Machine>>>,
+    pub frames: Vec<Arc<RefCell<Frame>>>,
+    pub links: Vec<Arc<RefCell<Link>>>,
+    pub machines: Vec<Arc<RefCell<Machine>>>,
     pub active_machine: Weak<RefCell<Machine>>,
 }
 
@@ -63,9 +63,9 @@ impl Serialize for Blueprint {
 }
 
 impl Blueprint {
-    pub fn new(vm: &Rc<RefCell<Vm>>) -> Rc<RefCell<Blueprint>> {
-        let bp = Rc::new(RefCell::new(Blueprint {
-            vm: Rc::downgrade(vm),
+    pub fn new(vm: &Arc<RefCell<Vm>>) -> Arc<RefCell<Blueprint>> {
+        let bp = Arc::new(RefCell::new(Blueprint {
+            vm: Arc::downgrade(vm),
             name: String::new(),
             frames: Vec::new(),
             links: Vec::new(),
@@ -76,7 +76,7 @@ impl Blueprint {
         return bp;
     }
 
-    pub fn load_json(this: &Rc<RefCell<Blueprint>>, json: &serde_json::Value) {
+    pub fn load_json(this: &Arc<RefCell<Blueprint>>, json: &serde_json::Value) {
         let blueprint_rc = this;
         let frames = json.get("frames").unwrap().as_array().unwrap();
         for frame_json in frames.iter() {
@@ -137,12 +137,12 @@ impl Blueprint {
             let mut bp = blueprint_rc.borrow_mut();
             let order = link_json.get("order").unwrap().as_i64().unwrap();
             let link = Link {
-                blueprint: Rc::downgrade(blueprint_rc),
+                blueprint: Arc::downgrade(blueprint_rc),
                 a: parse_terminator(bp.deref(), &link_json, "a"),
                 b: parse_terminator(bp.deref(), &link_json, "b"),
                 order: order as i32,
             };
-            bp.links.push(Rc::new(RefCell::new(link)));
+            bp.links.push(Arc::new(RefCell::new(link)));
         }
         let machines = json.get("machines").unwrap().as_array().unwrap();
         for machine_json in machines.iter() {
@@ -150,7 +150,7 @@ impl Blueprint {
             Machine::load_json(&machine, machine_json);
         }
         let active_machine = json.get("active_machine").unwrap().as_i64().unwrap();
-        let weak = Rc::downgrade(&blueprint_rc.borrow().machines[active_machine as usize]);
+        let weak = Arc::downgrade(&blueprint_rc.borrow().machines[active_machine as usize]);
         blueprint_rc.borrow_mut().active_machine = weak;
     }
 
@@ -158,11 +158,11 @@ impl Blueprint {
         self.name = name;
     }
 
-    pub fn activate(&mut self, machine: &Rc<RefCell<Machine>>) {
-        self.active_machine = Rc::downgrade(machine);
+    pub fn activate(&mut self, machine: &Arc<RefCell<Machine>>) {
+        self.active_machine = Arc::downgrade(machine);
     }
 
-    pub fn with_object<F: FnMut(&mut Object)>(&self, frame_rc: &Rc<RefCell<Frame>>, mut f: F) {
+    pub fn with_object<F: FnMut(&mut Object)>(&self, frame_rc: &Arc<RefCell<Frame>>, mut f: F) {
         let machine_rc = if frame_rc.borrow().global {
             self.machines[0].clone()
         } else {
@@ -170,37 +170,37 @@ impl Blueprint {
         };
         machine_rc.borrow_mut().with_object(frame_rc, f);
     }
-    
-    pub fn get_object(&self, frame_rc: &Rc<RefCell<Frame>>) -> Rc<RefCell<Object>> {
+
+    pub fn get_object(&self, frame_rc: &Arc<RefCell<Frame>>) -> Arc<RefCell<Object>> {
         let machine_rc = if frame_rc.borrow().global {
             self.machines[0].clone()
         } else {
             self.active_machine.upgrade().unwrap()
         };
         let object = machine_rc.borrow().get_object(&frame_rc);
-        return object
+        return object;
     }
 
 
-    pub fn query_frame(&self, p: WorldPoint) -> Option<Rc<RefCell<Frame>>> {
+    pub fn query_frame(&self, p: WorldPoint) -> Option<Arc<RefCell<Frame>>> {
         self.frames
             .iter()
             .find(|frame_rc| frame_rc.borrow().hit_test(&p))
             .cloned()
     }
 
-    pub fn frame_index(&self, frame: &Rc<RefCell<Frame>>) -> u32 {
+    pub fn frame_index(&self, frame: &Arc<RefCell<Frame>>) -> u32 {
         for (i, other) in self.frames.iter().enumerate() {
-            if Rc::ptr_eq(frame, other) {
+            if Arc::ptr_eq(frame, other) {
                 return i as u32;
             }
         }
         panic!("Bad frame reference");
     }
 
-    pub fn machine_index(&self, machine: &Rc<RefCell<Machine>>) -> u32 {
+    pub fn machine_index(&self, machine: &Arc<RefCell<Machine>>) -> u32 {
         for (i, other) in self.machines.iter().enumerate() {
-            if Rc::ptr_eq(machine, other) {
+            if Arc::ptr_eq(machine, other) {
                 return i as u32;
             }
         }

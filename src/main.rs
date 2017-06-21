@@ -1,8 +1,24 @@
 /*
 TODOs:
-- Show list of machines on the left (DONE)
-- Insert / Delet add / delete machines (DONE)
-- Page Up / Down switch between machines (DONE)
+- Pass the results of running process as events back to the main thread (DONE)
+
+
+- Implement multiple blueprints
+
+
+- Top-level blueprint instances hold global variables
+- Blueprints are defined as part of the VM
+- What about closures? "local blueprints" need to be scoped to avoid polluting global namespace
+- Future: add locally defined blueprints (closures) - able to refer to the parent local variables as if they were globals
+- Now: all blueprints are defined at top level
+
+- All blueprints should be closures - this would make the implementation simpler.
+- A blueprint can be added in another blueprint as a frame (it will be replicated for each machine if it's a local frame).
+- A blueprint can use blueprints from the same or parent scopes
+- Local blueprints can exist only within the scope of parent blueprint
+
+- Future: provide "interfaces" / "contracts" / "protocols" - ability to pass and use instance of any blueprint
+
 
 On hold:
 - Cleanups - a - lot
@@ -29,12 +45,13 @@ mod blueprint;
 mod vm;
 mod event;
 mod menu;
+mod process;
 
 use std::time::Instant;
 use std::thread;
 use std::sync::mpsc;
 use std::any::Any;
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::cell::{RefCell, Ref, RefMut};
 use std::ops::Deref;
 use std::f64::consts::PI;
@@ -52,7 +69,7 @@ use menu::*;
 use serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct, SerializeTuple,
                  SerializeTupleVariant};
 
-struct SerializableVec<'a, T: 'a + Serialize>(&'a Vec<Rc<RefCell<T>>>);
+struct SerializableVec<'a, T: 'a + Serialize>(&'a Vec<Arc<RefCell<T>>>);
 
 impl<'a, T: Serialize> Serialize for SerializableVec<'a, T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -152,7 +169,7 @@ trait Visible {
 
 #[derive(Clone)]
 pub struct FrameParam {
-    frame: Rc<RefCell<Frame>>,
+    frame: Arc<RefCell<Frame>>,
     param_index: usize,
 }
 
@@ -224,7 +241,7 @@ impl Action for ConnectParamAction {
         let blueprint_weak = frame_param.frame.borrow().blueprint.clone();
         let blueprint_rc = blueprint_weak.upgrade().unwrap();
         let mut blueprint = blueprint_rc.borrow_mut();
-        let link_rc = Rc::new(RefCell::new(Link {
+        let link_rc = Arc::new(RefCell::new(Link {
             blueprint: blueprint_weak,
             a: LinkTerminator::FrameParam(frame_param),
             b: LinkTerminator::Point(w),
@@ -239,7 +256,7 @@ impl Action for ConnectParamAction {
     }
 }
 
-impl Visible for Rc<RefCell<Frame>> {
+impl Visible for Arc<RefCell<Frame>> {
     fn draw(&self, c: &mut Canvas) {
         let frame = self.borrow();
         if frame.typ.parameters.len() > 0 {
@@ -353,8 +370,8 @@ struct RunAction {
 }
 
 impl RunAction {
-    fn new(frame: &Rc<RefCell<Frame>>) -> RunAction {
-        RunAction { frame: Rc::downgrade(frame) }
+    fn new(frame: &Arc<RefCell<Frame>>) -> RunAction {
+        RunAction { frame: Arc::downgrade(frame) }
     }
 }
 
@@ -376,7 +393,7 @@ impl Action for RunAction {
             return None;
         }
         let blueprint = blueprint.unwrap();
-        let object = Rc::downgrade(&blueprint.borrow().get_object(&frame));
+        let object = Arc::downgrade(&blueprint.borrow().get_object(&frame));
         vm.tasks.push_back(object);
         None
     }
@@ -412,8 +429,8 @@ struct DeleteFrameAction {
 }
 
 impl DeleteFrameAction {
-    fn new(frame: &Rc<RefCell<Frame>>) -> DeleteFrameAction {
-        DeleteFrameAction { frame: Rc::downgrade(frame) }
+    fn new(frame: &Arc<RefCell<Frame>>) -> DeleteFrameAction {
+        DeleteFrameAction { frame: Arc::downgrade(frame) }
     }
 }
 
@@ -434,17 +451,17 @@ impl Action for DeleteFrameAction {
         if let Some(blueprint) = blueprint {
             let mut blueprint = blueprint.borrow_mut();
             if let Some((index, _)) = blueprint.frames.iter().enumerate().find(|x| {
-                Rc::ptr_eq(x.1, &frame)
+                Arc::ptr_eq(x.1, &frame)
             })
             {
                 blueprint.frames.swap_remove(index);
 
                 blueprint.links.retain(|link_rc| {
-                    fn side_retain(f: &Rc<RefCell<Frame>>, t: &LinkTerminator) -> bool {
+                    fn side_retain(f: &Arc<RefCell<Frame>>, t: &LinkTerminator) -> bool {
                         match t {
-                            &LinkTerminator::Frame(ref other_frame) => !Rc::ptr_eq(f, other_frame),
+                            &LinkTerminator::Frame(ref other_frame) => !Arc::ptr_eq(f, other_frame),
                             &LinkTerminator::FrameParam(ref frame_param) => {
-                                !Rc::ptr_eq(f, &frame_param.frame)
+                                !Arc::ptr_eq(f, &frame_param.frame)
                             }
                             _ => true,
                         }
@@ -455,10 +472,10 @@ impl Action for DeleteFrameAction {
                 for machine in blueprint.machines.iter() {
                     let mut machine = machine.borrow_mut();
                     machine.objects.retain(|o_rc| {
-                        !Rc::ptr_eq(&o_rc.borrow().frame, &frame)
+                        !Arc::ptr_eq(&o_rc.borrow().frame, &frame)
                     });
                 }
-                let frame = Rc::try_unwrap(frame).ok().unwrap();
+                let frame = Arc::try_unwrap(frame).ok().unwrap();
             }
         }
         None
@@ -473,12 +490,12 @@ struct DragFrameAction {
 
 impl DragFrameAction {
     fn new(
-        frame_rc: &Rc<RefCell<Frame>>,
+        frame_rc: &Arc<RefCell<Frame>>,
         horizontal: DragMode,
         vertical: DragMode,
     ) -> DragFrameAction {
         DragFrameAction {
-            frame: Rc::downgrade(frame_rc),
+            frame: Arc::downgrade(frame_rc),
             horizontal: horizontal,
             vertical: vertical,
         }
@@ -526,11 +543,11 @@ const PARAM_SPACING: f64 = 2.;
 impl Frame {
     fn new(
         typ: &'static Type,
-        blueprint: &Rc<RefCell<Blueprint>>,
+        blueprint: &Arc<RefCell<Blueprint>>,
         global: bool,
-    ) -> Rc<RefCell<Frame>> {
-        let f = Rc::new(RefCell::new(Frame {
-            blueprint: Rc::downgrade(blueprint),
+    ) -> Arc<RefCell<Frame>> {
+        let f = Arc::new(RefCell::new(Frame {
+            blueprint: Arc::downgrade(blueprint),
             typ: typ,
             pos: WorldPoint::zero(),
             size: WorldSize::new(10., 10.),
@@ -540,10 +557,9 @@ impl Frame {
         for machine_cell in blueprint.borrow().machines.iter() {
             let mut machine = machine_cell.borrow_mut();
             let mut object = Object {
-                machine: Rc::downgrade(machine_cell),
+                machine: Arc::downgrade(machine_cell),
                 frame: f.clone(),
                 execute: false,
-                running: false,
                 data: Box::new(()),
             };
             (typ.init)(&mut object);
@@ -595,7 +611,7 @@ impl Serialize for FrameParam {
 }
 
 pub enum LinkTerminator {
-    Frame(Rc<RefCell<Frame>>),
+    Frame(Arc<RefCell<Frame>>),
     FrameParam(FrameParam),
     Point(WorldPoint),
 }
@@ -671,7 +687,7 @@ impl Serialize for Link {
     }
 }
 
-impl Visible for Rc<RefCell<Link>> {
+impl Visible for Arc<RefCell<Link>> {
     fn draw(&self, c: &mut Canvas) {
         let link = self.borrow();
         let start = link.a.get_pos(&link.b);
@@ -726,13 +742,19 @@ impl Visible for Rc<RefCell<Link>> {
 
 pub struct Object {
     machine: Weak<RefCell<Machine>>,
-    frame: Rc<RefCell<Frame>>,
+    frame: Arc<RefCell<Frame>>,
     execute: bool,
-    running: bool,
     data: Box<Any>,
 }
 
-struct SerializeFrameIndex<'a>(&'a Rc<RefCell<Frame>>);
+impl Object {
+    pub fn typ(&self) -> &'static Type {
+        let frame = self.frame.borrow();
+        frame.typ
+    }
+}
+
+struct SerializeFrameIndex<'a>(&'a Arc<RefCell<Frame>>);
 
 impl<'a> Serialize for SerializeFrameIndex<'a> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -757,7 +779,7 @@ impl Serialize for Object {
     }
 }
 
-type ObjectCell = Rc<RefCell<Object>>;
+type ObjectCell = Arc<RefCell<Object>>;
 type RunArg = Vec<ObjectCell>;
 type RunArgs = Vec<RunArg>;
 
@@ -771,7 +793,8 @@ pub struct Type {
     name: &'static str,
     parameters: &'static [Parameter],
     init: &'static (Fn(&mut Object) + Sync),
-    run: &'static (Fn(RunArgs) + Sync),
+    run: &'static (Fn(&mut Vm, &ObjectCell, RunArgs) + Sync),
+    update: Option<&'static (Fn(&mut Vm, &ObjectCell, Box<Any + Send>) + Sync)>,
     draw: &'static (Fn(&Object, &mut Canvas) + Sync),
     serialize: &'static (Fn(&Object) -> Vec<u8> + Sync),
     deserialize: &'static (Fn(&mut Object, Vec<u8>) + Sync),
@@ -781,7 +804,8 @@ static text_type: Type = Type {
     name: "Text",
     parameters: &[],
     init: &|o: &mut Object| { o.data = Box::new("".to_string()); },
-    run: &|args: RunArgs| {},
+    run: &|vm: &mut Vm, o: &ObjectCell, args: RunArgs| {},
+    update: None,
     draw: &|o: &Object, canvas: &mut Canvas| {
         let font_metrics = canvas.get_font_metrics(6.);
 
@@ -808,69 +832,15 @@ static empty_type: Type = Type {
     name: "Empty",
     parameters: &[],
     init: &|o: &mut Object| {},
-    run: &|args: RunArgs| {},
-    draw: &|o: &Object, canvas: &mut Canvas| {},
-    serialize: &|o: &Object| -> Vec<u8> { Vec::new() },
-    deserialize: &|o: &mut Object, data: Vec<u8>| {},
-};
-
-static process_type: Type = Type {
-    name: "Process",
-    parameters: &[
-        Parameter {
-            name: "Command",
-            runnable: false,
-            output: false,
-        },
-        Parameter {
-            name: "Arguments",
-            runnable: false,
-            output: false,
-        },
-        Parameter {
-            name: "Input",
-            runnable: false,
-            output: false,
-        },
-        Parameter {
-            name: "Output",
-            runnable: false,
-            output: true,
-        },
-    ],
-    init: &|o: &mut Object| {},
-    run: &|args: RunArgs| if let Some(command_rc) = args[0].get(0) {
-        let command = command_rc.borrow();
-        if let Some(command) = command.data.downcast_ref::<String>() {
-            let mut command_builder = std::process::Command::new(command);
-            println!("Executing {}", command);
-            for arg_rc in args[1].iter() {
-                let arg = arg_rc.borrow();
-                if let Some(arg) = arg.data.downcast_ref::<String>() {
-                    command_builder.arg(arg);
-                } else {
-                    println!("Argument is not a string!");
-                }
-            }
-            let mut child = command_builder
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("failed to execute ls");
-            let output = child.wait_with_output().expect("failed to wait on ls");
-            println!("Result: {}", String::from_utf8(output.stdout).unwrap());
-        } else {
-            println!("Command is not a string!");
-        }
-    } else {
-        println!("Missing Command argument!");
-    },
+    run: &|vm: &mut Vm, o: &ObjectCell, args: RunArgs| {},
+    update: None,
     draw: &|o: &Object, canvas: &mut Canvas| {},
     serialize: &|o: &Object| -> Vec<u8> { Vec::new() },
     deserialize: &|o: &mut Object, data: Vec<u8>| {},
 };
 
 fn new_text(
-    blueprint_rc: &Rc<RefCell<Blueprint>>,
+    blueprint_rc: &Arc<RefCell<Blueprint>>,
     text: &str,
     x: f64,
     y: f64,
@@ -898,10 +868,6 @@ fn main() {
             vm.borrow_mut().activate(&blueprint);
             let machine = Machine::new(&blueprint);
             blueprint.borrow_mut().activate(&machine);
-            new_text(&blueprint, "/bin/ls", -20., -20., 50., 10.);
-            new_text(&blueprint, "/home/mrogalski", -20., 20., 50., 10.);
-            let process_frame = Frame::new(&process_type, &blueprint, true);
-            process_frame.borrow_mut().pos.x += 20.;
         }
     }
 

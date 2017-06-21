@@ -4,7 +4,7 @@ extern crate serde_json;
 extern crate ref_eq;
 extern crate serde;
 
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::cell::RefCell;
 use std::collections::{HashSet, HashMap, VecDeque};
 use std::sync::mpsc;
@@ -16,7 +16,7 @@ use std::process;
 use blueprint::*;
 use json_canvas::*;
 use canvas::*;
-use process_type;
+use process::*;
 use empty_type;
 use text_type;
 use menu::*;
@@ -42,18 +42,18 @@ use touch::*;
 
 static FONT: &'static [u8] = include_bytes!("html/fonts/iosevka-regular.ttf");
 
-fn walk_visible<V: Visible, T, F: FnMut(&Visible)->Option<T>>(v: &Vec<V>, mut f: F) -> Option<T> {
+fn walk_visible<V: Visible, T, F: FnMut(&Visible) -> Option<T>>(v: &Vec<V>, mut f: F) -> Option<T> {
     for visible in v.iter() {
         let result = f(visible as &Visible);
         if result.is_some() {
             return result;
         }
     }
-    return None
+    return None;
 }
 
 pub struct Vm {
-    pub blueprints: Vec<Rc<RefCell<Blueprint>>>,
+    pub blueprints: Vec<Arc<RefCell<Blueprint>>>,
     pub active_blueprint: Weak<RefCell<Blueprint>>,
 
     pub tasks: VecDeque<Weak<RefCell<Object>>>,
@@ -62,14 +62,17 @@ pub struct Vm {
     is_running: bool,
 
     rx: mpsc::Receiver<Event>,
-    tx: mpsc::Sender<Event>,
+    pub tx: mpsc::Sender<Event>,
     websocket_clients: HashMap<i64, websocket::sender::Writer<TcpStream>>,
     client_counter: i64,
-    font: Rc<rusttype::Font<'static>>,
+    font: Arc<rusttype::Font<'static>>,
+
+    run_ids: HashMap<u64, Weak<RefCell<Object>>>,
+    last_run_id: u64,
 
     // Per-client parameters:
     display: Display,
-    center: Rc<RefCell<WorldPoint>>,
+    center: Arc<RefCell<WorldPoint>>,
     mouse: PixelPoint,
     last_update: time::Instant,
     mouse_handler: Option<Box<TouchReceiver>>,
@@ -81,11 +84,13 @@ use self::serde::ser::{Serialize, Serializer, SerializeSeq, SerializeStruct};
 
 use SerializableVec;
 
-struct Tasks<'a> (&'a Vm);
+struct Tasks<'a>(&'a Vm);
 
-impl <'a> Serialize for Tasks<'a> {
+impl<'a> Serialize for Tasks<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer {
+    where
+        S: Serializer,
+    {
         use std::ops::Deref;
         let mut task_seq = serializer.serialize_seq(None)?;
         for task in self.0.tasks.iter() {
@@ -108,9 +113,14 @@ impl <'a> Serialize for Tasks<'a> {
 
 impl Serialize for Vm {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer {
+    where
+        S: Serializer,
+    {
         let mut serializer = serializer.serialize_struct("Vm", 3)?;
-        serializer.serialize_field("blueprints", &SerializableVec(&self.blueprints))?;
+        serializer.serialize_field(
+            "blueprints",
+            &SerializableVec(&self.blueprints),
+        )?;
         let active_blueprint = self.active_blueprint.upgrade().unwrap();
         let active_blueprint = self.blueprint_index(&active_blueprint);
         serializer.serialize_field("active_blueprint", &active_blueprint);
@@ -125,9 +135,16 @@ use std::error::Error;
 struct VmVisitor;
 
 impl Vm {
-    fn blueprint_index(&self, blueprint: &Rc<RefCell<Blueprint>>) -> u32 {
+    pub fn start_running(&mut self, o: &ObjectCell) -> u64 {
+        self.last_run_id += 1;
+        self.run_ids.insert(self.last_run_id, Arc::downgrade(o));
+        self.last_run_id
+    }
+    fn blueprint_index(&self, blueprint: &Arc<RefCell<Blueprint>>) -> u32 {
         for (i, other) in self.blueprints.iter().enumerate() {
-            if Rc::ptr_eq(blueprint, other) { return i as u32; }
+            if Arc::ptr_eq(blueprint, other) {
+                return i as u32;
+            }
         }
         panic!("Bad blueprint reference");
     }
@@ -136,9 +153,11 @@ impl Vm {
         let blueprint_rc = self.active_blueprint.upgrade().unwrap();
         let blueprint = blueprint_rc.borrow();
         let frame_rc = blueprint.query_frame(world_point);
-        if frame_rc.is_none() { return None; }
+        if frame_rc.is_none() {
+            return None;
+        }
         let frame_rc = frame_rc.unwrap();
-        return Some(Rc::downgrade(&blueprint.get_object(&frame_rc)));
+        return Some(Arc::downgrade(&blueprint.get_object(&frame_rc)));
     }
     fn mouse_display(&self) -> DisplayPoint {
         self.display.to_millimetre(self.mouse)
@@ -146,9 +165,9 @@ impl Vm {
     fn mouse_world(&self) -> WorldPoint {
         self.display.to_millimetre(self.mouse) * self.zoom - *self.center.borrow()
     }
-    pub fn new() -> Rc<RefCell<Vm>> {
+    pub fn new() -> Arc<RefCell<Vm>> {
         let font_collection = rusttype::FontCollection::from_bytes(FONT);
-        let font = Rc::new(font_collection.into_font().unwrap());
+        let font = Arc::new(font_collection.into_font().unwrap());
 
         let (tx, rx) = mpsc::channel();
 
@@ -158,45 +177,48 @@ impl Vm {
         thread::spawn(move || {
             let server = websocket::Server::bind("127.0.0.1:8081").unwrap();
             for stream in server
-                    .filter_map(Result::ok)
-                    .map(|x| x.accept())
-                    .filter_map(Result::ok) {
+                .filter_map(Result::ok)
+                .map(|x| x.accept())
+                .filter_map(Result::ok)
+            {
                 websocket_tx
                     .send(Event::NewWebsocketClient(stream))
                     .unwrap();
             }
         });
 
-        Rc::new(RefCell::new(Vm {
-                    blueprints: Vec::new(),
-                    active_blueprint: Weak::new(),
-                    types: vec![&process_type, &text_type, &empty_type],
-                    tasks: VecDeque::new(),
-                    is_running: true,
-                    rx: rx,
-                    tx: tx,
-                    center: Rc::new(RefCell::new(WorldPoint::new(0., 0.))),
-                    display: Display {
-                        size: PixelPoint::new(1024., 768.),
-                        dpi: 96.,
-                        eye_distance_meters: 0.5,
-                    },
-                    websocket_clients: HashMap::new(),
-                    font: font,
-                    client_counter: 0,
-                    mouse: PixelPoint::new(0., 0.),
-                    last_update: time::Instant::now(),
-                    mouse_handler: None,
-                    menus: Vec::new(),
-                    zoom: ScaleFactor::new(1.0),
+        Arc::new(RefCell::new(Vm {
+            blueprints: Vec::new(),
+            active_blueprint: Weak::new(),
+            types: vec![&process_type, &text_type, &empty_type],
+            tasks: VecDeque::new(),
+            is_running: true,
+            rx: rx,
+            tx: tx,
+            center: Arc::new(RefCell::new(WorldPoint::new(0., 0.))),
+            display: Display {
+                size: PixelPoint::new(1024., 768.),
+                dpi: 96.,
+                eye_distance_meters: 0.5,
+            },
+            websocket_clients: HashMap::new(),
+            run_ids: HashMap::new(),
+            last_run_id: 0,
+            font: font,
+            client_counter: 0,
+            mouse: PixelPoint::new(0., 0.),
+            last_update: time::Instant::now(),
+            mouse_handler: None,
+            menus: Vec::new(),
+            zoom: ScaleFactor::new(1.0),
         }))
     }
 
-    pub fn activate(&mut self, blueprint: &Rc<RefCell<Blueprint>>) {
-        self.active_blueprint = Rc::downgrade(blueprint);
+    pub fn activate(&mut self, blueprint: &Arc<RefCell<Blueprint>>) {
+        self.active_blueprint = Arc::downgrade(blueprint);
     }
 
-    pub fn load_json(this: &Rc<RefCell<Vm>>) -> Result<(), Box<Error>> {
+    pub fn load_json(this: &Arc<RefCell<Vm>>) -> Result<(), Box<Error>> {
         use std::fs::File;
         use std::io::Read;
         let file = File::open("vm.json")?;
@@ -208,7 +230,7 @@ impl Vm {
             Blueprint::load_json(&mybp, blueprint);
         }
         let active_blueprint = value.get("active_blueprint").unwrap().as_i64().unwrap();
-        let weak_bp = Rc::downgrade(&this.borrow().blueprints[active_blueprint as usize]);
+        let weak_bp = Arc::downgrade(&this.borrow().blueprints[active_blueprint as usize]);
         this.borrow_mut().active_blueprint = weak_bp;
         let tasks = value.get("tasks").ok_or("No tasks")?;
         let tasks = tasks.as_array().ok_or("Tasks is not an array")?;
@@ -251,7 +273,7 @@ impl Vm {
                 None
             });
         }
-        
+
         c.save();
         c.font(format!("{}px Iosevka", 6.).as_str());
         c.translate(self.display.size.x / 2., self.display.size.y / 2.);
@@ -275,7 +297,7 @@ impl Vm {
         let left = -half_width + PARAM_RADIUS * 2.;
         let active_machine = blueprint.active_machine.upgrade().unwrap();
         for machine in blueprint.machines.iter() {
-            let fill_style = if Rc::ptr_eq(machine, &active_machine) {
+            let fill_style = if Arc::ptr_eq(machine, &active_machine) {
                 "#3e64a3"
             } else {
                 "#959ba5"
@@ -287,7 +309,7 @@ impl Vm {
 
         let menus_rc = self.menus.iter().filter_map(|x| x.upgrade()).collect();
         draw(&menus_rc, c);
-        self.menus = menus_rc.iter().map(Rc::downgrade).collect();
+        self.menus = menus_rc.iter().map(Arc::downgrade).collect();
         c.restore();
     }
 
@@ -295,10 +317,10 @@ impl Vm {
         let d = self.mouse_display();
         let w = self.mouse_world();
         let move_view = Entry {
-                    name: "Move view".to_string(),
-                    color: None,
-                    shortcuts: vec!["MMB".to_string()],
-                    action: Box::new(MovePointAction::new(Rc::downgrade(&self.center), true)),
+            name: "Move view".to_string(),
+            color: None,
+            shortcuts: vec!["MMB".to_string()],
+            action: Box::new(MovePointAction::new(Arc::downgrade(&self.center), true)),
         };
         let type_entries = self.types.iter().map(|typ| {
             Entry {
@@ -308,13 +330,13 @@ impl Vm {
                 action: Box::new(AddFrameAction::new(typ)),
             }
         });
-        
+
         {
             let blueprint = self.active_blueprint.upgrade().unwrap();
             let blueprint = blueprint.borrow();
             let frames = blueprint.frames.clone();
-            
-            if let Some(mut frame_menu) = walk_visible(&frames, |frame| { frame.make_menu(d, w) }) {
+
+            if let Some(mut frame_menu) = walk_visible(&frames, |frame| frame.make_menu(d, w)) {
                 frame_menu.entries.push(move_view);
                 frame_menu.entries.extend(type_entries);
                 return frame_menu;
@@ -323,7 +345,7 @@ impl Vm {
 
         let mut menu_entries = vec![move_view];
         menu_entries.extend(type_entries);
-        
+
         Menu {
             entries: menu_entries,
             color: "#f49e42".to_string(),
@@ -337,7 +359,7 @@ impl Vm {
         }
         self.mouse_handler = match button {
             0 => start_touch(&frames, &world_point),
-            1 => Some(Box::new(NavTouchReceiver{ nav: Rc::downgrade(&self.center), last_pos: world_point })),
+            1 => Some(Box::new(NavTouchReceiver{ nav: Arc::downgrade(&self.center), last_pos: world_point })),
             2 => open_menu(world_point),
             _ => None
         }
@@ -346,7 +368,7 @@ impl Vm {
 
     fn open_menu(&mut self, menu: Menu, point: DisplayPoint) -> Option<Box<TouchReceiver>> {
         let visible_menu_rc = VisibleMenu::new(menu, point);
-        self.menus.push(Rc::downgrade(&visible_menu_rc));
+        self.menus.push(Arc::downgrade(&visible_menu_rc));
         Some(Box::new(visible_menu_rc))
     }
 
@@ -362,227 +384,262 @@ impl Vm {
                 println!("VM: received Quit");
                 over.send(0).unwrap();
                 println!("VM: sent response");
-            },
-                Event::NewWebsocketClient(mut client) => {
-                    let (mut websocket_reader, websocket_writer) = client.split().unwrap();
-                    let client_number = self.client_counter;
-                    self.client_counter += 1;
-                    println!("Client {} connected (websocket)", client_number);
-                    self.websocket_clients.insert(client_number, websocket_writer);
-                    let websocket_tx = self.tx.clone();
-                    thread::spawn(move || {
-                        for message in websocket_reader.incoming_messages() {
-                            let mut message: websocket::Message = match message {
-                                Ok(message) => message,
-                                Err(_) => break,
-                            };
+            }
+            Event::NewWebsocketClient(mut client) => {
+                let (mut websocket_reader, websocket_writer) = client.split().unwrap();
+                let client_number = self.client_counter;
+                self.client_counter += 1;
+                println!("Client {} connected (websocket)", client_number);
+                self.websocket_clients.insert(
+                    client_number,
+                    websocket_writer,
+                );
+                let websocket_tx = self.tx.clone();
+                thread::spawn(move || {
+                    for message in websocket_reader.incoming_messages() {
+                        let mut message: websocket::Message = match message {
+                            Ok(message) => message,
+                            Err(_) => break,
+                        };
 
-                            use self::websocket::message::Type;
+                        use self::websocket::message::Type;
 
-                            match message.opcode {
-                                Type::Close => break,
-                                Type::Text => {
-                                    let payload = message.payload.to_mut();
-                                    let json: serde_json::Value = serde_json::from_slice(payload).unwrap();
-                                    Event::from(json)
-                                        .map(|event| { websocket_tx.send(event).unwrap(); });
-                                }
-                                _ => {}
-                            };
-                        }
-                        websocket_tx
-                            .send(Event::WebsocketDisconnected(client_number))
-                            .unwrap();
-                    });
-                }
-                Event::WebsocketDisconnected(i) => {
-                    println!("Client {} disconnected", i);
-                    self.websocket_clients.remove(&i);
-                }
-                Event::MouseDown {
-                    x: x,
-                    y: y,
-                    button: button,
-                } => {
-                    /* # Interaction modes
-                     *
-                     * Interaction modes describe how touch points (fingers on the screen / mouse pointer)
-                     * affect the interface.
-                     *
-                     * ## Navigation Mode
-                     *
-                     * On desktop enabled by holding the middle mouse button or Left Shift.
-                     * On mobile enabled by holding the navigation button.
-                     *
-                     * While in navigation mode, touch points are locked to their initial positions in
-                     * the world space. Window viewport is adjusted to maintain this constraint.
-                     *
-                     * Moving cursor / finger moves the window in the opposing direction.
-                     *
-                     * Scrolling / pinching scales the window and keeps the effect.
-                     * 
-                     * Dragging the navigation button scales the window temporarily.
-                     *
-                     * ## Immediate Mode
-                     *
-                     * On desktop this mode is controlled by the left mouse button.
-                     * On mobile enabled by holding the immediate button.
-                     *
-                     * Touching an element of the interface invokes default action. Usually movement.
-                     *
-                     * The action happens in the world space.
-                     *
-                     * ## Menu Mode
-                     *
-                     * On desktop this mode is controlled by the right mouse button.
-                     * On mobile this is the default mode.
-                     *
-                     * Holding the touch point starts the menu in drag mode. Releasing the button quickly
-                     * opens the menu in persistent mode.
-                     *
-                     * Opens a screen space menu with actions.
-                     *
-                     * Activating an action moves the interaction to the world space.
-                     */
-                    
-                    if self.mouse_handler.is_some() {
-                        return;
-                    }
-                    let display_point = self.mouse_display();
-                    let world_point = self.mouse_world();
-                    let menu = self.make_menu();
-                    self.mouse_handler = match button {
-                        0 => menu.activate_shortcut(self, "LMB".to_string(), display_point, world_point),
-                        1 => menu.activate_shortcut(self, "MMB".to_string(), display_point, world_point),
-                        2 => self.open_menu(menu, display_point),
-                        _ => None,
-                    };
-                    self.update_clients();
-                }
-                Event::MouseUp {
-                    x: x,
-                    y: y,
-                    button: button,
-                } => {
-                    match self.mouse_handler.take() {
-                        Some(touch_receiver) => touch_receiver.end_touch(self),
-                        None => (),
-                    }
-                    self.update_clients();
-                }
-                Event::MouseMove { x: x, y: y } => {
-                    self.mouse = PixelPoint::new(x, y);
-                    let display = self.mouse_display();
-                    let world = self.mouse_world();
-
-                    let taken = self.mouse_handler.take();
-                    let update = taken.is_some();
-                    let taken = taken.and_then(|b| b.continue_touch(self, display, world));
-                    self.mouse_handler = taken;
-                    
-                    if update {
-                        self.update_clients();
-                    }
-                }
-                Event::KeyDown { code: code, key: key } => {
-                    println!("Pressed key {}, code {}", key, code);
-                    if code == "Print" {
-                        use std::fs::File;
-                        use std::io::Write;
-                        let mut file = File::create("vm.json").ok().unwrap();
-                        let buffer = serde_json::to_string(self).ok().unwrap();
-                        file.write_all(buffer.as_ref()).ok().unwrap();
-                        println!("VM state saved");
-                        return;
-                    }
-                    if code == "Insert" {
-                        use Machine;
-                        let machine = Machine::new(&self.active_blueprint.upgrade().unwrap());
-                    }
-                    if code == "Delete" {
-                        let bp = self.active_blueprint.upgrade().unwrap();
-                        let mut bp = bp.borrow_mut();
-                        let mc = bp.active_machine.upgrade().unwrap();
-                        let mut idx = bp.machines.iter().enumerate().find(|tup| Rc::ptr_eq(tup.1, &mc)).unwrap().0;
-                        if idx > 0 {
-                            bp.machines.remove(idx);
-                            if idx >= bp.machines.len() {
-                                idx -= 1;
+                        match message.opcode {
+                            Type::Close => break,
+                            Type::Text => {
+                                let payload = message.payload.to_mut();
+                                let json: serde_json::Value = serde_json::from_slice(payload)
+                                    .unwrap();
+                                Event::from(json).map(|event| {
+                                    websocket_tx.send(event).unwrap();
+                                });
                             }
-                            bp.active_machine = Rc::downgrade(&bp.machines[idx]);
+                            _ => {}
+                        };
+                    }
+                    websocket_tx
+                        .send(Event::WebsocketDisconnected(client_number))
+                        .unwrap();
+                });
+            }
+            Event::WebsocketDisconnected(i) => {
+                println!("Client {} disconnected", i);
+                self.websocket_clients.remove(&i);
+            }
+            Event::MouseDown {
+                x: x,
+                y: y,
+                button: button,
+            } => {
+                /* # Interaction modes
+                 *
+                 * Interaction modes describe how touch points (fingers on the screen / mouse pointer)
+                 * affect the interface.
+                 *
+                 * ## Navigation Mode
+                 *
+                 * On desktop enabled by holding the middle mouse button or Left Shift.
+                 * On mobile enabled by holding the navigation button.
+                 *
+                 * While in navigation mode, touch points are locked to their initial positions in
+                 * the world space. Window viewport is adjusted to maintain this constraint.
+                 *
+                 * Moving cursor / finger moves the window in the opposing direction.
+                 *
+                 * Scrolling / pinching scales the window and keeps the effect.
+                 *
+                 * Dragging the navigation button scales the window temporarily.
+                 *
+                 * ## Immediate Mode
+                 *
+                 * On desktop this mode is controlled by the left mouse button.
+                 * On mobile enabled by holding the immediate button.
+                 *
+                 * Touching an element of the interface invokes default action. Usually movement.
+                 *
+                 * The action happens in the world space.
+                 *
+                 * ## Menu Mode
+                 *
+                 * On desktop this mode is controlled by the right mouse button.
+                 * On mobile this is the default mode.
+                 *
+                 * Holding the touch point starts the menu in drag mode. Releasing the button quickly
+                 * opens the menu in persistent mode.
+                 *
+                 * Opens a screen space menu with actions.
+                 *
+                 * Activating an action moves the interaction to the world space.
+                 */
+
+                if self.mouse_handler.is_some() {
+                    return;
+                }
+                let display_point = self.mouse_display();
+                let world_point = self.mouse_world();
+                let menu = self.make_menu();
+                self.mouse_handler = match button {
+                    0 => {
+                        menu.activate_shortcut(self, "LMB".to_string(), display_point, world_point)
+                    }
+                    1 => {
+                        menu.activate_shortcut(self, "MMB".to_string(), display_point, world_point)
+                    }
+                    2 => self.open_menu(menu, display_point),
+                    _ => None,
+                };
+                self.update_clients();
+            }
+            Event::MouseUp {
+                x: x,
+                y: y,
+                button: button,
+            } => {
+                match self.mouse_handler.take() {
+                    Some(touch_receiver) => touch_receiver.end_touch(self),
+                    None => (),
+                }
+                self.update_clients();
+            }
+            Event::MouseMove { x: x, y: y } => {
+                self.mouse = PixelPoint::new(x, y);
+                let display = self.mouse_display();
+                let world = self.mouse_world();
+
+                let taken = self.mouse_handler.take();
+                let update = taken.is_some();
+                let taken = taken.and_then(|b| b.continue_touch(self, display, world));
+                self.mouse_handler = taken;
+
+                if update {
+                    self.update_clients();
+                }
+            }
+            Event::KeyDown {
+                code: code,
+                key: key,
+            } => {
+                println!("Pressed key {}, code {}", key, code);
+                if code == "PrintScreen" {
+                    use std::fs::File;
+                    use std::io::Write;
+                    let mut file = File::create("vm.json").ok().unwrap();
+                    let buffer = serde_json::to_string(self).ok().unwrap();
+                    file.write_all(buffer.as_ref()).ok().unwrap();
+                    println!("VM state saved");
+                    return;
+                }
+                if code == "Insert" {
+                    use Machine;
+                    let machine = Machine::new(&self.active_blueprint.upgrade().unwrap());
+                }
+                if code == "Delete" {
+                    let bp = self.active_blueprint.upgrade().unwrap();
+                    let mut bp = bp.borrow_mut();
+                    let mc = bp.active_machine.upgrade().unwrap();
+                    let mut idx = bp.machines
+                        .iter()
+                        .enumerate()
+                        .find(|tup| Arc::ptr_eq(tup.1, &mc))
+                        .unwrap()
+                        .0;
+                    if idx > 0 {
+                        bp.machines.remove(idx);
+                        if idx >= bp.machines.len() {
+                            idx -= 1;
                         }
+                        bp.active_machine = Arc::downgrade(&bp.machines[idx]);
                     }
-                    if code == "PageDown" || code == "PageUp" {
-                        let bp = self.active_blueprint.upgrade().unwrap();
-                        let mut bp = bp.borrow_mut();
-                        let mc = bp.active_machine.upgrade().unwrap();
-                        let idx = bp.machines.iter().enumerate().find(|tup| Rc::ptr_eq(tup.1, &mc)).unwrap().0;
-                        let delta = if code == "PageDown" { 1 } else { bp.machines.len()-1 };
-                        let idx = (idx + delta) % bp.machines.len();
-                        bp.active_machine = Rc::downgrade(&bp.machines[idx]);
-                    }
-                    if self.mouse_handler.is_some() {
-                        return;
-                    }
-                    let menu = self.make_menu();
-                    self.mouse_handler = match code.as_ref() {
-                        "Delete" => self.activate_shortcut(menu, code.clone()),
-                        "Space" => self.activate_shortcut(menu, code.clone()),
-                        _ => None,
+                }
+                if code == "PageDown" || code == "PageUp" {
+                    let bp = self.active_blueprint.upgrade().unwrap();
+                    let mut bp = bp.borrow_mut();
+                    let mc = bp.active_machine.upgrade().unwrap();
+                    let idx = bp.machines
+                        .iter()
+                        .enumerate()
+                        .find(|tup| Arc::ptr_eq(tup.1, &mc))
+                        .unwrap()
+                        .0;
+                    let delta = if code == "PageDown" {
+                        1
+                    } else {
+                        bp.machines.len() - 1
                     };
-                    if let Some(weak) = self.mouse_object() {
-                        let rc = weak.upgrade().unwrap();
-                        {
-                            let mut object = rc.borrow_mut();
-                            if ref_eq::ref_eq(object.frame.borrow().typ, &text_type) {
-                                if key.len() == 1 {
-                                    let mut contents = object.data
-                                        .downcast_mut::<String>().unwrap();
-                                    contents.push_str(key.as_ref());
-                                } else if key == "Backspace" {
-                                    let mut contents = object.data
-                                        .downcast_mut::<String>().unwrap();
-                                    contents.pop();
-                                }
+                    let idx = (idx + delta) % bp.machines.len();
+                    bp.active_machine = Arc::downgrade(&bp.machines[idx]);
+                }
+                if self.mouse_handler.is_some() {
+                    return;
+                }
+                let menu = self.make_menu();
+                self.mouse_handler = match code.as_ref() {
+                    "Delete" => self.activate_shortcut(menu, code.clone()),
+                    "Space" => self.activate_shortcut(menu, code.clone()),
+                    _ => None,
+                };
+                if let Some(weak) = self.mouse_object() {
+                    let rc = weak.upgrade().unwrap();
+                    {
+                        let mut object = rc.borrow_mut();
+                        if ref_eq::ref_eq(object.frame.borrow().typ, &text_type) {
+                            if key.len() == 1 {
+                                let mut contents = object.data.downcast_mut::<String>().unwrap();
+                                contents.push_str(key.as_ref());
+                            } else if key == "Backspace" {
+                                let mut contents = object.data.downcast_mut::<String>().unwrap();
+                                contents.pop();
                             }
                         }
                     }
-                    self.update_clients();
                 }
-                Event::DisplaySize {
-                    width: w,
-                    height: h,
-                } => {
-                    self.display.size = PixelPoint::new(w, h);
-                    println!("Display size is {} x {} px", w, h);
-                    self.update_clients();
-                }
-                Event::RenderingDone => {
-                    /*
+                self.update_clients();
+            }
+            Event::DisplaySize {
+                width: w,
+                height: h,
+            } => {
+                self.display.size = PixelPoint::new(w, h);
+                println!("Display size is {} x {} px", w, h);
+                self.update_clients();
+            }
+            Event::RenderingDone => {
+                /*
                     let dur = last_update.elapsed();
                     println!("Rendering done ({} ms)",
                     (dur.as_secs() as f64) * 1000. + (dur.subsec_nanos() as f64) / 1000000.);
                      */
-                }
-                Event::RenderingReady => {
-                    /*
+            }
+            Event::RenderingReady => {
+                /*
                 let dur = last_update.elapsed();
                 println!("Rendering ready ({} ms)",
                          (dur.as_secs() as f64) * 1000. + (dur.subsec_nanos() as f64) / 1000000.);
                  */
-                }
-                Event::MouseWheel { x: x, y: y } => {
-                    {
-                        let start = self.mouse_world();
-                        self.zoom = ScaleFactor::new(self.zoom.get() * (y/200.).exp());
-                        let end = self.mouse_world();
-                        let mut center = self.center.borrow_mut();
-                        *center = *center - start + end;
-                    }
-                    self.update_clients();
-                }
-                _ => {}
             }
+            Event::MouseWheel { x: x, y: y } => {
+                {
+                    let start = self.mouse_world();
+                    self.zoom = ScaleFactor::new(self.zoom.get() * (y / 200.).exp());
+                    let end = self.mouse_world();
+                    let mut center = self.center.borrow_mut();
+                    *center = *center - start + end;
+                }
+                self.update_clients();
+            }
+            Event::Closure(mut closure) => {
+                closure();
+            }
+            Event::RunUpdate(run_id, arg) => {
+                let object = {
+                    let ref weak = self.run_ids[&run_id];
+                    weak.upgrade().unwrap()
+                };
+                let typ = object.borrow().typ();
+                (typ.update.unwrap())(self, &object, arg);
+            }
+            _ => {}
+        }
     }
 
     fn collect_args(&self, object: &ObjectCell) -> RunArgs {
@@ -599,10 +656,13 @@ impl Vm {
         for link_rc in blueprint.links.iter() {
             let link = link_rc.borrow();
             if let &LinkTerminator::FrameParam(FrameParam {
-                frame: ref frame_a,
-                param_index: param_index,
-            }) = &link.a {
-                if !Rc::ptr_eq(frame_a, &object.frame) { continue; }
+                                                   frame: ref frame_a,
+                                                   param_index: param_index,
+                                               }) = &link.a
+            {
+                if !Arc::ptr_eq(frame_a, &object.frame) {
+                    continue;
+                }
                 if let &LinkTerminator::Frame(ref frame_b) = &link.b {
                     args[param_index].push(machine.get_object(frame_b));
                 }
@@ -614,9 +674,12 @@ impl Vm {
     fn process_task(&mut self, object: Weak<RefCell<Object>>) {
         if let Some(object_rc) = object.upgrade() {
             let args = self.collect_args(&object_rc);
-            let object = object_rc.borrow();
-            let typ = object.frame.borrow().typ;
-            (typ.run)(args);
+            let typ = {
+                let object = object_rc.borrow();
+                let typ = object.frame.borrow().typ;
+                typ
+            };
+            (typ.run)(self, &object_rc, args);
         }
     }
 

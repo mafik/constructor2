@@ -1,4 +1,4 @@
-use std::rc::{Weak, Rc};
+use std::sync::Weak;
 use std::cell::RefCell;
 
 use Frame;
@@ -22,11 +22,12 @@ pub struct DragFrame {
 }
 
 impl TouchReceiver for DragFrame {
-    fn continue_touch(mut self: Box<Self>,
-                      vm: &mut Vm,
-                      display: DisplayPoint,
-                      new_pos: WorldPoint)
-                      -> Option<Box<TouchReceiver>> {
+    fn continue_touch(
+        mut self: Box<Self>,
+        vm: &mut Vm,
+        display: DisplayPoint,
+        new_pos: WorldPoint,
+    ) -> Option<Box<TouchReceiver>> {
         {
             let frame = self.frame.upgrade();
             if frame.is_none() {
